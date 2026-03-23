@@ -84,20 +84,20 @@ def test_legislation_parsing(test_file_number):
 
 
 urls = [
-    "https://www.legislation.gov.uk/ukpga/1997/34/data.xml",
-    "https://www.legislation.gov.uk/ukcm/2007/1/data.xml",
-    "https://www.legislation.gov.uk/wsi/2004/3054/data.xml",
-    "https://www.legislation.gov.uk/asc/2024/4/data.xml",
-    "https://www.legislation.gov.uk/asp/2017/5/data.xml",
-    "https://www.legislation.gov.uk/ukcm/2003/1/data.xml",
-    "https://www.legislation.gov.uk/ukla/2024/1/data.xml",
-    "https://www.legislation.gov.uk/nisi/1990/1509/data.xml",
-    "https://www.legislation.gov.uk/eudn/2019/2213/data.xml",
-    "https://www.legislation.gov.uk/wsi/2007/580/data.xml",
-    "https://www.legislation.gov.uk/anaw/2019/4/data.xml",
-    "https://www.legislation.gov.uk/eudr/2018/2057/data.xml",
-    "https://www.legislation.gov.uk/uksi/2023/1432/data.xml",
-    "https://www.legislation.gov.uk/uksi/2015/1911/data.xml",
+    "https://www.legislation.gov.uk/ukpga/1997/34/enacted/data.xml",
+    "https://www.legislation.gov.uk/ukcm/2007/1/enacted/data.xml",
+    "https://www.legislation.gov.uk/wsi/2004/3054/made/data.xml",
+    "https://www.legislation.gov.uk/asc/2024/4/enacted/data.xml",
+    "https://www.legislation.gov.uk/asp/2017/5/enacted/data.xml",
+    "https://www.legislation.gov.uk/ukcm/2003/1/enacted/data.xml",
+    "https://www.legislation.gov.uk/ukla/2024/1/enacted/data.xml",
+    "https://www.legislation.gov.uk/nisi/1990/1509/made/data.xml",
+    "https://www.legislation.gov.uk/eudn/2019/2213/adopted/data.xml",
+    "https://www.legislation.gov.uk/wsi/2007/580/made/data.xml",
+    "https://www.legislation.gov.uk/anaw/2019/4/enacted/data.xml",
+    "https://www.legislation.gov.uk/eudr/2018/2057/adopted/data.xml",
+    "https://www.legislation.gov.uk/uksi/2023/1432/made/data.xml",
+    "https://www.legislation.gov.uk/uksi/2015/1911/made/data.xml",
 ]
 
 

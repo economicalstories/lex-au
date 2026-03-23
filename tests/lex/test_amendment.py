@@ -37,5 +37,5 @@ def test_amendment_integration():
         assert amendment.changed_year == 2024 or amendment.affecting_year == 2024
 
         # Check URLs are properly formed
-        assert amendment.changed_url.startswith("https://www.legislation.gov.uk/id/")
-        assert amendment.affecting_url.startswith("https://www.legislation.gov.uk/id/")
+        assert amendment.changed_url.startswith("http://www.legislation.gov.uk/id/")
+        assert amendment.affecting_url.startswith("http://www.legislation.gov.uk/id/")

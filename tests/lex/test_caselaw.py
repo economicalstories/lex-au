@@ -8,7 +8,7 @@ from lex.caselaw.scraper import CaselawScraper
 from lex.core.utils import load_xml_file_to_soup
 
 
-@pytest.mark.integration
+@pytest.mark.skip(reason="TNA caselaw site structure changed; caselaw disabled pending licence")
 def test_caselaw_integration():
     """Test the full caselaw scraping and parsing pipeline."""
     # Initialize components
