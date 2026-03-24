@@ -44,22 +44,17 @@ const RESEARCH_SETTINGS_KEY = 'lex-research-maxSteps'
 // Type definitions for AI SDK message parts
 interface MessagePart {
   type: string
+  // Text / reasoning parts
   text?: string
   content?: string
+  // Dynamic tool parts (MCP tools use type: 'dynamic-tool')
+  toolName?: string
+  toolCallId?: string
   input?: Record<string, unknown>
   args?: Record<string, unknown>
   arguments?: Record<string, unknown>
   state?: 'input-streaming' | 'input-available' | 'output-available' | 'output-error'
-  output?: {
-    results?: Array<{
-      title?: string
-      citation?: string
-      name?: string
-      [key: string]: unknown
-    }>
-    count?: number
-    [key: string]: unknown
-  }
+  output?: unknown
 }
 
 interface DisplayCard {
@@ -68,7 +63,7 @@ interface DisplayCard {
   name?: string
   args?: Record<string, unknown>
   state?: string
-  result?: MessagePart['output']
+  result?: Record<string, unknown>
   resultCount?: number
   id: number
 }
@@ -99,43 +94,62 @@ function splitMessageForDisplay(parts: MessagePart[]): DisplayCard[] {
         })
       }
     }
-    // Individual tool call
-    else if (part.type?.startsWith('tool-') && part.type !== 'tool-result') {
-      const toolName = part.type.replace('tool-', '')
+    // Tool call — handles both typed (tool-{name}) and dynamic MCP tools (dynamic-tool)
+    else if (part.type === 'dynamic-tool' || (part.type?.startsWith('tool-') && part.type !== 'tool-result')) {
+      const toolName = part.type === 'dynamic-tool'
+        ? (part.toolName || 'unknown')
+        : part.type.replace('tool-', '')
 
-      // Extract tool results if available
-      let result: MessagePart['output'] = undefined
+      // Extract tool results — MCP outputs may be content arrays or parsed objects
+      let result: Record<string, unknown> | undefined = undefined
       let resultCount = 0
-      if (part.state === 'output-available' && part.output) {
-        result = part.output
-        // Try to count results
-        if (Array.isArray(result)) {
-          resultCount = result.length
-        } else if (result.results && Array.isArray(result.results)) {
-          resultCount = result.results.length
-        } else if (typeof result === 'object' && result.count) {
-          resultCount = result.count
+      if (part.state === 'output-available' && part.output != null) {
+        let output = part.output as Record<string, unknown>
+
+        // MCP tool results come as content arrays: [{type: 'text', text: '...'}]
+        if (Array.isArray(output)) {
+          const textBlock = (output as Array<Record<string, unknown>>).find(
+            (block) => block.type === 'text' && typeof block.text === 'string'
+          )
+          if (textBlock) {
+            try {
+              output = JSON.parse(textBlock.text as string)
+            } catch { /* use as-is */ }
+          }
+        }
+
+        result = output
+
+        // Count results from various Lex API response shapes
+        if (Array.isArray(output)) {
+          resultCount = output.length
+        } else if (Array.isArray(output?.results)) {
+          resultCount = (output.results as unknown[]).length
+        } else if (Array.isArray(output?.result)) {
+          resultCount = (output.result as unknown[]).length
+        } else if (typeof output?.total === 'number') {
+          resultCount = output.total as number
         }
       }
 
       cards.push({
         type: 'tool',
         name: toolName,
-        args: part.input || part.args || part.arguments,
+        args: part.input as Record<string, unknown> || part.args || part.arguments,
         state: part.state,
         result,
         resultCount,
         id: index
       })
     }
-    // Collect all text for final card
+    // Collect all text — preserve whitespace (newlines are meaningful in markdown)
     else if (part.type === 'text') {
       const text = part.text
-      if (text?.trim()) {
+      if (text) {
         const lastCard = cards[cards.length - 1]
         if (lastCard && lastCard.type === 'text') {
           lastCard.text += text
-        } else {
+        } else if (text.trim()) {
           cards.push({ type: 'text', text, id: index })
         }
       }
@@ -446,15 +460,19 @@ export default function ResearchPage() {
                                   <div className={`mt-1 pl-6 space-y-1.5 text-xs text-muted-foreground/80 ${ANIMATION.CLASSES}`}>
                                     {/* Render results based on structure - handle both wrapped and direct arrays */}
                                     {(() => {
-                                      // Get results array - handle both direct array and wrapped in {results: []}
+                                      // Get results array - handle direct array, {results: []}, and {result: []} (Lex API)
                                       const resultsArray = Array.isArray(card.result)
                                         ? card.result
-                                        : (card.result.results && Array.isArray(card.result.results) ? card.result.results : [])
+                                        : Array.isArray(card.result?.results)
+                                          ? card.result.results
+                                          : Array.isArray(card.result?.result)
+                                            ? card.result.result
+                                            : []
 
                                       // Determine tool type for appropriate rendering
-                                      const isLegislationSection = card.name === 'search_legislation_sections'
+                                      const isLegislationSection = card.name === 'search_for_legislation_sections' || card.name === 'search_legislation_sections'
                                       const isCaselawSummary = card.name === 'search_caselaw_summaries'
-                                      const isAmendment = card.name === 'search_amendments'
+                                      const isAmendment = card.name === 'search_amendments' || card.name === 'search_amendment_sections'
 
                                       return (
                                         <>
