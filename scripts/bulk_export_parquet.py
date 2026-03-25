@@ -121,8 +121,9 @@ COLLECTIONS = {
 RETENTION_WEEKS = 4
 
 # Retry configuration for Qdrant Cloud timeouts
-MAX_RETRIES = 5
-BASE_BACKOFF = 2.0
+MAX_RETRIES = 10
+BASE_BACKOFF = 10.0
+MAX_BACKOFF = 300.0  # Cap at 5 minutes
 
 
 def _is_retryable(error: Exception) -> bool:
@@ -139,7 +140,7 @@ def _retry_with_backoff(operation_name: str, operation, max_retries=MAX_RETRIES)
         except Exception as e:
             if attempt == max_retries - 1 or not _is_retryable(e):
                 raise
-            backoff = BASE_BACKOFF * (2**attempt)
+            backoff = min(BASE_BACKOFF * (2**attempt), MAX_BACKOFF)
             logger.warning(
                 f"{operation_name} timeout (attempt {attempt + 1}/{max_retries}), "
                 f"retrying in {backoff:.0f}s..."
@@ -421,8 +422,8 @@ def export_collection(
                         year_filter=year,
                         year_field=config["year_field"],
                     )
-                except ValueError as e:
-                    logger.info(f"    Skipping year {year}: {e}")
+                except Exception as e:
+                    logger.error(f"    Failed year {year}: {e}")
                     continue
 
                 if record_count == 0:
@@ -657,6 +658,8 @@ def main() -> bool:
     # Export each collection
     all_stats = []
     for collection_name, config in collections_to_export.items():
+        # Fresh client per collection to avoid stale TCP connections
+        qdrant_client = get_qdrant_client()
         try:
             stats = export_collection(
                 qdrant_client,

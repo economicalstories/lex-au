@@ -88,7 +88,7 @@ def get_qdrant_client() -> QdrantClient:
         )
         # Patch operations with retry for transient errors
         client.query_points = _with_retry(client.query_points)
-        client.scroll = _with_retry(client.scroll)
+        client.scroll = _with_retry(client.scroll, max_retries=5, base_backoff=5.0)
         client.upsert = _with_retry(client.upsert, max_retries=5, base_backoff=5.0)
 
         return client
