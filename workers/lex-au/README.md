@@ -20,6 +20,14 @@ The included `wrangler.toml` wires the Worker to:
 
 ## 1) Create Vectorize indexes
 
+Fastest option (idempotent helper script):
+
+```bash
+./setup.sh
+```
+
+Manual option:
+
 Run once:
 
 ```bash
@@ -94,4 +102,17 @@ npx wrangler@latest vectorize list
 
 # tail worker logs
 npx wrangler@latest tail
+```
+
+## Optional script configuration
+
+`setup.sh` accepts:
+
+- `DIMENSIONS` (default: `1024`)
+- `METRIC` (default: `cosine`)
+
+Example:
+
+```bash
+DIMENSIONS=1024 METRIC=cosine ./setup.sh
 ```
