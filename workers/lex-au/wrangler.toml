@@ -3,6 +3,8 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+ai = { binding = "AI" }
+
 [[vectorize]]
 binding = "LEGISLATION_INDEX"
 index_name = "au-legislation"
