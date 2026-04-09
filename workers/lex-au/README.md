@@ -98,6 +98,25 @@ After deployment, run the AU ingestion pipeline so vectors are upserted into:
 - `au-legislation`
 - `au-legislation-section`
 
+
+## Troubleshooting: `Invalid TOML document` on deploy
+
+If deploy fails with an error like:
+
+```text
+Invalid TOML document: trying to redefine an already defined table or value
+.../workers/lex-au/wrangler.toml:...
+```
+
+check your AI binding stanza in `wrangler.toml`. It must be:
+
+```toml
+[ai]
+binding = "AI"
+```
+
+Do **not** use `[[ai]]` here. `[[ai]]` defines an array-of-tables and causes Wrangler to fail parsing this config.
+
 ## Common checks
 
 ```bash
