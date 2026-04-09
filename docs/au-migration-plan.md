@@ -298,8 +298,7 @@ index_name = "au-legislation"
 binding = "LEGISLATION_SECTION_INDEX"
 index_name = "au-legislation-section"
 
-[[ai]]
-binding = "AI"
+ai = { binding = "AI" }
 
 [[unsafe.bindings]]
 name = "RATE_LIMITER"
