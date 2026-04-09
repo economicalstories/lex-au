@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from pathlib import Path
 from typing import Sequence
 
 from lex_au.core.embeddings import build_sparse_vector, embed_batch
@@ -72,6 +74,9 @@ def run_ingest(
     skip_embed: bool = False,
     skip_upload: bool = False,
     batch_size: int = 50,
+    resume_after_title_id: str | None = None,
+    checkpoint_path: str | None = None,
+    progress_every: int = 10,
 ) -> dict:
     if skip_embed and not (dry_run or skip_upload):
         raise ValueError("Cannot upload to Vectorize when embeddings are disabled.")
@@ -80,14 +85,39 @@ def run_ingest(
     legislation_buffer: list[AULegislation] = []
     section_buffer: list[AULegislationSection] = []
     client = None if dry_run or skip_upload else VectorizeClient.from_env()
+    start_time = time.monotonic()
+
+    if checkpoint_path:
+        checkpoint = _read_checkpoint(Path(checkpoint_path))
+        if checkpoint and not resume_after_title_id:
+            resume_after_title_id = checkpoint.get("last_completed_title_id")
+            if resume_after_title_id:
+                logger.info("Loaded checkpoint and resuming after %s", resume_after_title_id)
+
+    title_counts = pipeline.scraper.count_titles(years=years, types=types, limit=limit)
+    counts_by_year: dict[int, int] = {year: 0 for year in years}
+    done_by_year: dict[int, int] = {year: 0 for year in years}
+    counts_by_type: dict[str, int] = {legislation_type.value: 0 for legislation_type in types}
+    done_by_type: dict[str, int] = {legislation_type.value: 0 for legislation_type in types}
+
+    for key, value in title_counts.items():
+        if key == "total":
+            continue
+        year_text, type_value = key.split(":", maxsplit=1)
+        year = int(year_text)
+        counts_by_year[year] = counts_by_year.get(year, 0) + value
+        counts_by_type[type_value] = counts_by_type.get(type_value, 0) + value
 
     stats = {
         "years": years,
         "types": [legislation_type.value for legislation_type in types],
+        "total_titles_planned": title_counts["total"],
         "legislation_count": 0,
         "section_count": 0,
         "embedded": not skip_embed,
         "uploaded": client is not None,
+        "resume_after_title_id": resume_after_title_id,
+        "checkpoint_path": checkpoint_path,
         "sample": None,
     }
 
@@ -96,11 +126,27 @@ def run_ingest(
         types=types,
         limit=limit,
         version_spec=version_spec,
+        resume_after_title_id=resume_after_title_id,
     ):
         legislation_buffer.append(legislation)
         section_buffer.extend(legislation.sections)
         stats["legislation_count"] += 1
         stats["section_count"] += len(legislation.sections)
+        done_by_year[legislation.year] = done_by_year.get(legislation.year, 0) + 1
+        done_by_type[legislation.type.value] = done_by_type.get(legislation.type.value, 0) + 1
+
+        _log_progress(
+            current_title_id=legislation.id,
+            stats=stats,
+            counts_by_year=counts_by_year,
+            done_by_year=done_by_year,
+            counts_by_type=counts_by_type,
+            done_by_type=done_by_type,
+            start_time=start_time,
+            force=stats["legislation_count"] == 1 or (
+                progress_every > 0 and stats["legislation_count"] % progress_every == 0
+            ),
+        )
 
         if stats["sample"] is None:
             stats["sample"] = {
@@ -133,6 +179,16 @@ def run_ingest(
             )
             section_buffer = []
 
+        if checkpoint_path:
+            _write_checkpoint(
+                path=Path(checkpoint_path),
+                payload={
+                    "last_completed_title_id": legislation.id,
+                    "legislation_count": stats["legislation_count"],
+                    "section_count": stats["section_count"],
+                },
+            )
+
     if client is not None and legislation_buffer:
         _upload_documents(
             client=client,
@@ -146,7 +202,111 @@ def run_ingest(
             documents=section_buffer,
         )
 
+    stats["progress"] = {
+        "by_year": {
+            str(year): {
+                "processed": done_by_year.get(year, 0),
+                "total": counts_by_year.get(year, 0),
+            }
+            for year in sorted(counts_by_year)
+        },
+        "by_type": {
+            type_name: {
+                "processed": done_by_type.get(type_name, 0),
+                "total": counts_by_type.get(type_name, 0),
+            }
+            for type_name in sorted(counts_by_type)
+        },
+    }
+
+    if checkpoint_path:
+        _write_checkpoint(
+            path=Path(checkpoint_path),
+            payload={
+                "completed": True,
+                "last_completed_title_id": None,
+                "legislation_count": stats["legislation_count"],
+                "section_count": stats["section_count"],
+            },
+        )
+
     return stats
+
+
+def _read_checkpoint(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        import json
+
+        return json.loads(path.read_text())
+    except Exception:
+        logger.exception("Failed to read checkpoint file %s", path)
+        return None
+
+
+def _write_checkpoint(path: Path, payload: dict) -> None:
+    try:
+        import json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2))
+    except Exception:
+        logger.exception("Failed to write checkpoint file %s", path)
+
+
+def _percent(processed: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return (processed / total) * 100.0
+
+
+def _log_progress(
+    current_title_id: str,
+    stats: dict,
+    counts_by_year: dict[int, int],
+    done_by_year: dict[int, int],
+    counts_by_type: dict[str, int],
+    done_by_type: dict[str, int],
+    start_time: float,
+    force: bool,
+) -> None:
+    if not force:
+        return
+
+    total = stats["total_titles_planned"]
+    completed = stats["legislation_count"]
+    elapsed = max(time.monotonic() - start_time, 1e-6)
+    rate = completed / elapsed
+    remaining = max(total - completed, 0)
+    eta_minutes = remaining / rate / 60 if rate > 0 and remaining > 0 else 0.0
+
+    year_status = ", ".join(
+        (
+            f"{year}: {done_by_year.get(year, 0)}/{counts_by_year.get(year, 0)} "
+            f"({_percent(done_by_year.get(year, 0), counts_by_year.get(year, 0)):.1f}%)"
+        )
+        for year in sorted(counts_by_year)
+    )
+    type_status = ", ".join(
+        (
+            f"{type_name.upper()}: "
+            f"{done_by_type.get(type_name, 0)}/{counts_by_type.get(type_name, 0)} "
+            f"({_percent(done_by_type.get(type_name, 0), counts_by_type.get(type_name, 0)):.1f}%)"
+        )
+        for type_name in sorted(counts_by_type)
+    )
+
+    logger.info(
+        "Progress %s/%s (%.1f%%), current=%s, ETA=~%.1f min | by year: %s | by type: %s",
+        completed,
+        total,
+        _percent(completed, total),
+        current_title_id,
+        eta_minutes,
+        year_status,
+        type_status,
+    )
 
 
 def _upload_documents(

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
 import re
+from dataclasses import dataclass
 from typing import Iterator
 
 from lex_au.core.http import HttpClient
@@ -110,7 +110,10 @@ class AULegislationScraper:
         if urls:
             return urls
 
-        iframe_match = re.search(r'<iframe[^>]+src="([^"]+document_\d+/document_\d+\.html)"', page_html)
+        iframe_match = re.search(
+            r'<iframe[^>]+src="([^"]+document_\d+/document_\d+\.html)"',
+            page_html,
+        )
         if iframe_match:
             raw_url = iframe_match.group(1)
             if raw_url.startswith("http"):
@@ -133,8 +136,10 @@ class AULegislationScraper:
         types: list[AULegislationType],
         limit: int | None = None,
         version_spec: str = "latest",
+        resume_after_title_id: str | None = None,
     ) -> Iterator[AUTitlePayload]:
         produced = 0
+        resuming = resume_after_title_id is not None
         for year in years:
             for legislation_type in types:
                 remaining = None if limit is None else max(limit - produced, 0)
@@ -142,6 +147,11 @@ class AULegislationScraper:
                     return
 
                 for summary in self.discover_titles(legislation_type, year, remaining):
+                    if resuming:
+                        if summary.title_id == resume_after_title_id:
+                            logger.info("Resuming after %s", resume_after_title_id)
+                            resuming = False
+                        continue
                     title_data = self.fetch_title(summary.title_id)
                     version_data = self.fetch_version(summary.title_id, version_spec)
                     document_pages = self.fetch_document_pages(summary.title_id, version_spec)
@@ -158,3 +168,28 @@ class AULegislationScraper:
                     produced += 1
                     if limit is not None and produced >= limit:
                         return
+
+    def count_titles(
+        self,
+        years: list[int],
+        types: list[AULegislationType],
+        limit: int | None = None,
+    ) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        produced = 0
+
+        for year in years:
+            for legislation_type in types:
+                remaining = None if limit is None else max(limit - produced, 0)
+                if remaining == 0:
+                    break
+
+                key = f"{year}:{legislation_type.value}"
+                count = sum(
+                    1 for _ in self.discover_titles(legislation_type, year, limit=remaining)
+                )
+                counts[key] = count
+                produced += count
+
+        counts["total"] = produced
+        return counts
