@@ -11,7 +11,7 @@ index_name = "au-legislation"
 binding = "LEGISLATION_SECTION_INDEX"
 index_name = "au-legislation-section"
 
-[[ai]]
+[ai]
 binding = "AI"
 
 [[unsafe.bindings]]
