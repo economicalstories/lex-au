@@ -13,6 +13,7 @@
 import { Hono } from "hono";
 import type { Env } from "../env";
 import { TOOLS, dispatchTool } from "./tools";
+import { MAX_MCP_BODY_BYTES, parseJsonBody } from "../validation";
 
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const SERVER_NAME = "lex-au";
@@ -36,7 +37,10 @@ const mcp = new Hono<{ Bindings: Env }>();
 
 /** POST /mcp — JSON-RPC 2.0 endpoint. */
 mcp.post("/", async (c) => {
-  const body = await c.req.json<JsonRpcRequest>();
+  const parsedBody = await parseJsonBody<JsonRpcRequest>(c, MAX_MCP_BODY_BYTES);
+  if (!parsedBody.ok) return parsedBody.response;
+
+  const body = parsedBody.data;
 
   if (body.jsonrpc !== "2.0") {
     return c.json(

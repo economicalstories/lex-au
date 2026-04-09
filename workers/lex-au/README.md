@@ -11,6 +11,13 @@ The included `wrangler.toml` wires the Worker to:
 - `AI` → Workers AI binding
 - `RATE_LIMITER` → Cloudflare native rate limiter binding
 
+The Worker also applies a few built-in public-edge guardrails:
+
+- rate limiting on `/legislation/*`, `/proxy/*`, and `/mcp`
+- request body limits on JSON endpoints
+- clamped search pagination to keep queries bounded
+- proxy path validation so only safe `legislation.gov.au` paths are fetched
+
 ## Prerequisites
 
 - Node.js 20+

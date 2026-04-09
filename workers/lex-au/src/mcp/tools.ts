@@ -10,6 +10,13 @@ import {
   getSections,
   getFullText,
 } from "../vectorize/client";
+import {
+  parseActSearchInput,
+  parseFullTextInput,
+  parseLegislationLookupInput,
+  parseSectionLookupInput,
+  parseSectionSearchInput,
+} from "../validation";
 
 export interface McpTool {
   name: string;
@@ -132,46 +139,66 @@ export async function dispatchTool(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   switch (toolName) {
-    case "search_for_au_legislation_acts":
-      return searchActs(env, args.query as string, {
-        type: args.type as string[] | undefined,
-        yearFrom: args.year_from as number | undefined,
-        yearTo: args.year_to as number | undefined,
-        limit: (args.limit as number) ?? 10,
-        offset: (args.offset as number) ?? 0,
-      });
+    case "search_for_au_legislation_acts": {
+      const input = parseActSearchInput(args);
+      if (!input.ok) throw new Error(input.error);
 
-    case "search_for_au_legislation_sections":
-      return searchSections(env, args.query as string, {
-        legislationId: args.legislation_id as string | undefined,
-        type: args.type as string[] | undefined,
-        yearFrom: args.year_from as number | undefined,
-        yearTo: args.year_to as number | undefined,
-        size: (args.size as number) ?? 10,
-        offset: (args.offset as number) ?? 0,
+      return searchActs(env, input.value.query, {
+        type: input.value.type,
+        yearFrom: input.value.year_from,
+        yearTo: input.value.year_to,
+        limit: input.value.limit,
+        offset: input.value.offset,
       });
+    }
 
-    case "lookup_au_legislation":
+    case "search_for_au_legislation_sections": {
+      const input = parseSectionSearchInput(args);
+      if (!input.ok) throw new Error(input.error);
+
+      return searchSections(env, input.value.query, {
+        legislationId: input.value.legislation_id,
+        type: input.value.type,
+        yearFrom: input.value.year_from,
+        yearTo: input.value.year_to,
+        size: input.value.size,
+        offset: input.value.offset,
+      });
+    }
+
+    case "lookup_au_legislation": {
+      const input = parseLegislationLookupInput(args);
+      if (!input.ok) throw new Error(input.error);
+
       return lookupLegislation(
         env,
-        args.type as string,
-        args.year as number,
-        args.number as number,
+        input.value.type,
+        input.value.year,
+        input.value.number,
       );
+    }
 
-    case "get_au_legislation_sections":
+    case "get_au_legislation_sections": {
+      const input = parseSectionLookupInput(args);
+      if (!input.ok) throw new Error(input.error);
+
       return getSections(
         env,
-        args.legislation_id as string,
-        (args.limit as number) ?? 200,
+        input.value.legislation_id,
+        input.value.limit,
       );
+    }
 
-    case "get_au_legislation_full_text":
+    case "get_au_legislation_full_text": {
+      const input = parseFullTextInput(args);
+      if (!input.ok) throw new Error(input.error);
+
       return getFullText(
         env,
-        args.legislation_id as string,
-        (args.include_schedules as boolean) ?? false,
+        input.value.legislation_id,
+        input.value.include_schedules ?? false,
       );
+    }
 
     default:
       throw new Error(`Unknown tool: ${toolName}`);

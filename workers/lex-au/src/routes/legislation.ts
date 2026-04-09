@@ -11,22 +11,33 @@ import {
   getSections,
   getFullText,
 } from "../vectorize/client";
+import {
+  MAX_JSON_BODY_BYTES,
+  parseActSearchInput,
+  parseFullTextInput,
+  parseJsonBody,
+  parseLegislationLookupInput,
+  parseSectionLookupInput,
+  parseSectionSearchInput,
+} from "../validation";
 
 const legislation = new Hono<{ Bindings: Env }>();
 
 /** POST /legislation/section/search — semantic section search. */
 legislation.post("/section/search", async (c) => {
-  const body = await c.req.json();
-  const query = body.query as string;
-  if (!query) return c.json({ error: "query is required" }, 400);
+  const parsedBody = await parseJsonBody<Record<string, unknown>>(c, MAX_JSON_BODY_BYTES);
+  if (!parsedBody.ok) return parsedBody.response;
 
-  const result = await searchSections(c.env, query, {
-    legislationId: body.legislation_id,
-    type: body.type,
-    yearFrom: body.year_from,
-    yearTo: body.year_to,
-    size: body.size ?? 10,
-    offset: body.offset ?? 0,
+  const input = parseSectionSearchInput(parsedBody.data);
+  if (!input.ok) return c.json({ error: input.error }, 400);
+
+  const result = await searchSections(c.env, input.value.query, {
+    legislationId: input.value.legislation_id,
+    type: input.value.type,
+    yearFrom: input.value.year_from,
+    yearTo: input.value.year_to,
+    size: input.value.size,
+    offset: input.value.offset,
   });
 
   return c.json(result);
@@ -34,16 +45,18 @@ legislation.post("/section/search", async (c) => {
 
 /** POST /legislation/search — search acts via section embeddings. */
 legislation.post("/search", async (c) => {
-  const body = await c.req.json();
-  const query = body.query as string;
-  if (!query) return c.json({ error: "query is required" }, 400);
+  const parsedBody = await parseJsonBody<Record<string, unknown>>(c, MAX_JSON_BODY_BYTES);
+  if (!parsedBody.ok) return parsedBody.response;
 
-  const result = await searchActs(c.env, query, {
-    type: body.type,
-    yearFrom: body.year_from,
-    yearTo: body.year_to,
-    limit: body.limit ?? 10,
-    offset: body.offset ?? 0,
+  const input = parseActSearchInput(parsedBody.data);
+  if (!input.ok) return c.json({ error: input.error }, 400);
+
+  const result = await searchActs(c.env, input.value.query, {
+    type: input.value.type,
+    yearFrom: input.value.year_from,
+    yearTo: input.value.year_to,
+    limit: input.value.limit,
+    offset: input.value.offset,
   });
 
   return c.json(result);
@@ -51,15 +64,25 @@ legislation.post("/search", async (c) => {
 
 /** POST /legislation/lookup — exact lookup by type, year, number. */
 legislation.post("/lookup", async (c) => {
-  const body = await c.req.json();
-  const { type, year, number } = body;
-  if (!type || year === undefined || number === undefined) {
-    return c.json({ error: "type, year, and number are required" }, 400);
-  }
+  const parsedBody = await parseJsonBody<Record<string, unknown>>(c, MAX_JSON_BODY_BYTES);
+  if (!parsedBody.ok) return parsedBody.response;
 
-  const result = await lookupLegislation(c.env, type, year, number);
+  const input = parseLegislationLookupInput(parsedBody.data);
+  if (!input.ok) return c.json({ error: input.error }, 400);
+
+  const result = await lookupLegislation(
+    c.env,
+    input.value.type,
+    input.value.year,
+    input.value.number,
+  );
   if (!result) {
-    return c.json({ error: `Legislation not found: ${type} ${year} No. ${number}` }, 404);
+    return c.json(
+      {
+        error: `Legislation not found: ${input.value.type} ${input.value.year} No. ${input.value.number}`,
+      },
+      404,
+    );
   }
 
   return c.json(result);
@@ -67,15 +90,15 @@ legislation.post("/lookup", async (c) => {
 
 /** POST /legislation/section/lookup — get all sections of a legislation. */
 legislation.post("/section/lookup", async (c) => {
-  const body = await c.req.json();
-  const legislationId = body.legislation_id as string;
-  if (!legislationId) {
-    return c.json({ error: "legislation_id is required" }, 400);
-  }
+  const parsedBody = await parseJsonBody<Record<string, unknown>>(c, MAX_JSON_BODY_BYTES);
+  if (!parsedBody.ok) return parsedBody.response;
 
-  const sections = await getSections(c.env, legislationId, body.limit ?? 200);
+  const input = parseSectionLookupInput(parsedBody.data);
+  if (!input.ok) return c.json({ error: input.error }, 400);
+
+  const sections = await getSections(c.env, input.value.legislation_id, input.value.limit);
   if (sections.length === 0) {
-    return c.json({ error: `No sections found for: ${legislationId}` }, 404);
+    return c.json({ error: `No sections found for: ${input.value.legislation_id}` }, 404);
   }
 
   return c.json(sections);
@@ -83,20 +106,20 @@ legislation.post("/section/lookup", async (c) => {
 
 /** POST /legislation/text — get full text of a legislation. */
 legislation.post("/text", async (c) => {
-  const body = await c.req.json();
-  const legislationId = body.legislation_id as string;
-  if (!legislationId) {
-    return c.json({ error: "legislation_id is required" }, 400);
-  }
+  const parsedBody = await parseJsonBody<Record<string, unknown>>(c, MAX_JSON_BODY_BYTES);
+  if (!parsedBody.ok) return parsedBody.response;
+
+  const input = parseFullTextInput(parsedBody.data);
+  if (!input.ok) return c.json({ error: input.error }, 400);
 
   const result = await getFullText(
     c.env,
-    legislationId,
-    body.include_schedules ?? false,
+    input.value.legislation_id,
+    input.value.include_schedules ?? false,
   );
 
   if (!result) {
-    return c.json({ error: `Legislation not found: ${legislationId}` }, 404);
+    return c.json({ error: `Legislation not found: ${input.value.legislation_id}` }, 404);
   }
 
   return c.json(result);

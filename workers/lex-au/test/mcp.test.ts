@@ -7,6 +7,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import app from "../src/index";
 import type { Env } from "../src/env";
+import {
+  MAX_MCP_BODY_BYTES,
+  MAX_OFFSET,
+  MAX_QUERY_LENGTH,
+  MAX_SEARCH_LIMIT,
+} from "../src/validation";
 
 // Mock Cloudflare bindings
 function createMockEnv(): Env {
@@ -43,6 +49,8 @@ describe("Health endpoint", () => {
     const body = await res.json();
     expect(body.status).toBe("ok");
     expect(body.service).toBe("lex-au");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
   });
 });
 
@@ -171,6 +179,25 @@ describe("MCP protocol", () => {
     );
     expect(res.status).toBe(200);
   });
+
+  it("POST /mcp rejects oversized bodies", async () => {
+    const hugeQuery = "x".repeat(MAX_MCP_BODY_BYTES);
+    const res = await app.request(
+      "/mcp",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          jsonRpcRequest("tools/call", {
+            name: "search_for_au_legislation_acts",
+            arguments: { query: hugeQuery },
+          }),
+        ),
+      },
+      env,
+    );
+    expect(res.status).toBe(413);
+  });
 });
 
 describe("REST endpoints", () => {
@@ -207,6 +234,39 @@ describe("REST endpoints", () => {
     const body = await res.json();
     expect(body.results).toBeDefined();
     expect(body.total).toBeDefined();
+  });
+
+  it("POST /legislation/search clamps limit and offset", async () => {
+    const res = await app.request(
+      "/legislation/search",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: "employment law",
+          limit: 999,
+          offset: 999,
+        }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.limit).toBe(MAX_SEARCH_LIMIT);
+    expect(body.offset).toBe(MAX_OFFSET);
+  });
+
+  it("POST /legislation/search rejects overlong queries", async () => {
+    const res = await app.request(
+      "/legislation/search",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "x".repeat(MAX_QUERY_LENGTH + 1) }),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
   });
 
   it("POST /legislation/section/search returns results", async () => {
@@ -267,6 +327,11 @@ describe("REST endpoints", () => {
     const res = await app.request("/nonexistent", {}, env);
     expect(res.status).toBe(404);
   });
+
+  it("GET /proxy rejects unsafe paths", async () => {
+    const res = await app.request("/proxy/bad$path", {}, env);
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("Rate limiting", () => {
@@ -283,6 +348,14 @@ describe("Rate limiting", () => {
       },
       env,
     );
+    expect(res.status).toBe(429);
+  });
+
+  it("rate limits the proxy route too", async () => {
+    const env = createMockEnv();
+    (env.RATE_LIMITER.limit as ReturnType<typeof vi.fn>).mockResolvedValue({ success: false });
+
+    const res = await app.request("/proxy/C2004A01386", {}, env);
     expect(res.status).toBe(429);
   });
 });
