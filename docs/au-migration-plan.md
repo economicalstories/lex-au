@@ -17,9 +17,13 @@ Two independent workstreams, each in a separate session:
 │                                     │
 │  src/lex_au/                        │
 │  ├── scraper.py                     │
-│  │   └── scrapes legislation.gov.au │
-│  ├── parser.py                      │
-│  │   └── AU CLML XML → Pydantic     │
+│  │   └── REST API at               │
+│  │       api.prod.legislation.gov.au│
+│  ├── parser/                        │
+│  │   ├── epub_parser.py             │
+│  │   │   └── EPUB HTML → sections  │
+│  │   └── docx_parser.py            │
+│  │       └── DOCX XML → full text  │
 │  ├── embeddings.py                  │
 │  │   └── BAAI/bge-large-en-v1.5    │
 │  │       sentence-transformers+CUDA │
@@ -69,11 +73,12 @@ src/lex_au/
 │   └── http.py              # HTTP client (adapted from src/lex/core/http.py)
 ├── legislation/
 │   ├── __init__.py
-│   ├── scraper.py           # Scraper for legislation.gov.au
-│   ├── pipeline.py          # Orchestration: scrape → parse → embed → upsert
+│   ├── scraper.py           # REST API client for api.prod.legislation.gov.au
+│   ├── pipeline.py          # Orchestration: fetch → parse → embed → upsert
 │   └── parser/
 │       ├── __init__.py
-│       └── xml_parser.py    # AU CLML XML parser (adapted from UK parser)
+│       ├── epub_parser.py   # EPUB HTML → AULegislationSection list (section-level)
+│       └── docx_parser.py   # DOCX XML → full text string (legislation-level)
 └── ingest/
     ├── __init__.py
     ├── __main__.py          # CLI entry point
@@ -120,34 +125,104 @@ Content-Type: application/x-ndjson
 
 ```python
 class AULegislationType(str, Enum):
-    ACT = "act"     # C-series: C2022A00007
-    LI  = "li"      # F-series legislative instruments: F2022L00001
-    NI  = "ni"      # F-series notifiable instruments: F2022N00001
+    ACT = "act"     # C-series: C2022A00007  (API collection: "Act")
+    LI  = "li"      # F-series: F2022L00001  (API collection: "LegislativeInstrument")
+    NI  = "ni"      # F-series: F2022N00001  (API collection: "NotifiableInstrument")
+
+# API collection → AULegislationType mapping
+AU_COLLECTION_MAP = {
+    "Act": AULegislationType.ACT,
+    "LegislativeInstrument": AULegislationType.LI,
+    "NotifiableInstrument": AULegislationType.NI,
+}
 ```
 
-### Scraper — ⚠️ Requires API investigation
+### Scraper — ✅ REST API confirmed
 
-`legislation.gov.au` doesn't have the same well-documented XML API as `legislation.gov.uk`.
-Requires reverse-engineering during implementation. Known patterns to investigate:
-- `GET /Browse/Results/ByTitle/Acts/Current` — browse listing
-- `GET /Details/{series_id}` — series detail page
-- `GET /Details/{id}/Download` or `/Download/Legislation` — XML download
-- Atom/RSS feeds at browse endpoints
+`legislation.gov.au` has a proper REST API at `https://api.prod.legislation.gov.au`.
+No HTML scraping needed. See `docs/legislation-gov-au-api.md` for full details.
 
-Structure mirrors `src/lex/legislation/scraper.py`:
-1. `discover_series_ids(type, year)` → yields series IDs
-2. `fetch_xml(series_id)` → returns raw XML bytes
-3. Reuse `HttpClient` from `src/lex/core/http.py` (remove HTTP 436 handling, keep 429)
+**Three-step fetch per title:**
+```python
+# 1. List all titles of a given collection type (paginated, 100/page)
+GET /v1/titles?$top=100&$skip={offset}&$filter=collection eq 'Act'
+→ fields: id (title_id), name, collection, status, year, number, makingDate, isPrincipal
 
-### Parser — AU CLML
+# 2. Get latest compilation for a title
+GET /v1/versions?$filter=titleId eq '{title_id}' and isLatest eq true&$top=1
+→ fields: registerId (compilation ID), compilationNumber, start (compilation date), status
 
-Australian legislation uses CLML (same family as UK). Key differences to verify from sample XML:
-- Metadata namespace: UK uses `ukm:Year`, `ukm:Number`, `ukm:EnactmentDate` — AU equivalents TBC
-- Extent mapping: replace E/W/S/N.I. with `AUJurisdiction.FEDERAL` for all federal Acts
-- URI structure: AU uses `C2022A00007` / `F2022L00001` style, not `ukpga/2022/7` style
+# 3a. Get EPUB document metadata (for section-level parsing)
+GET /v1/Documents?$filter=titleId eq '{title_id}' and type eq 'Primary' and format eq 'Epub'&$orderby=start desc&$top=1
+→ fields: start, retrospectiveStart, rectificationVersionNumber, uniqueTypeNumber, volumeNumber
 
-The section-level parsing (`Body`, `P1`, `Schedules` CLML elements) should transfer largely
-unchanged — these are standard CLML constructs.
+# 3b. Download the EPUB (or DOCX) as binary ZIP bytes
+GET /v1/documents(titleid='{id}',start={date},retrospectivestart={date},
+    rectificationversionnumber=0,type='Primary',uniqueTypeNumber=0,volumeNumber=0,format='Epub')
+→ returns binary EPUB/ZIP bytes
+```
+
+**Rate limiting**: 1 req/sec (no HTTP 436 — only 429). Remove 436 from `http.py`.
+
+**Register ID format** (confirmed):
+- `C2022A00007` — original Act (year 2022, number 7)
+- `C2024C00838` — Compilation 38 of an existing Act
+- `F2022L00001` — Legislative Instrument
+- `F2022N00001` — Notifiable Instrument
+
+**Public web URL** (for `uri` field): `https://www.legislation.gov.au/Details/{register_id}`
+
+**Scale**: ~5,000 Acts in force; ~50,000 total titles across all collections.
+
+### Parser — EPUB HTML (not CLML XML)
+
+**This is the key difference from the UK approach.** AU legislation is downloaded as EPUB
+(for sections) or DOCX (for full text). There is no CLML XML exposed via the API.
+
+The UK `xml_parser.py` is **not reused** for AU. Instead:
+
+**`epub_parser.py`** — section-level content from EPUB:
+```
+EPUB is a ZIP archive containing HTML files in OEBPS/:
+  document.epub/
+  └── OEBPS/
+      ├── toc.ncx          → table of contents (section titles + order)
+      ├── document_1.html  → sections 1–N (or Part 1)
+      ├── document_2.html  → sections N+1–M (or Part 2)
+      └── ...
+
+Each HTML file contains:
+  <h2 class="sectionNo">4  Definitions</h2>
+  <p class="bodyText">In this Act:</p>
+  ...
+```
+
+Parser logic:
+1. `zipfile.ZipFile(epub_bytes)` → open the EPUB ZIP
+2. Read `toc.ncx` or `content.opf` to get ordered list of HTML files
+3. For each HTML file: BeautifulSoup parse → extract `<h2>` section headings + `<p>` body text
+4. Yield one `AULegislationSection` per heading block
+
+**`docx_parser.py`** — full text from DOCX (for legislation-level embeddings):
+```python
+import zipfile, re
+from io import BytesIO
+from bs4 import BeautifulSoup
+
+def extract_text_from_docx(docx_bytes: bytes) -> str:
+    with zipfile.ZipFile(BytesIO(docx_bytes)) as z:
+        xml = z.read("word/document.xml")
+    soup = BeautifulSoup(xml, "xml")
+    paragraphs = [p.get_text(" ") for p in soup.find_all("w:p")]
+    return " ".join(p.strip() for p in paragraphs if p.strip())
+```
+
+**Two-download strategy per title** (mirrors UK two-collection approach):
+```python
+# For AULegislation record: download DOCX → extract full text
+# For AULegislationSection records: download EPUB → parse HTML per section
+# Both downloads use the same /v1/documents endpoint, different format= param
+```
 
 ### CLI
 
@@ -170,8 +245,13 @@ lex-au = [
     "torch>=2.3.0",
     "rank-bm25>=0.2.2",
     "httpx>=0.27.0",
+    # EPUB/DOCX parsing (stdlib zipfile handles ZIP; bs4 for HTML; lxml for DOCX XML)
+    # bs4 + lxml already in main deps — no new deps needed for parser
 ]
 ```
+
+Note: `zipfile` is Python stdlib. `beautifulsoup4` and `lxml` are already in the main
+`pyproject.toml` dependencies. No additional parser dependencies are needed.
 
 ---
 
@@ -272,15 +352,16 @@ Consider using `@modelcontextprotocol/sdk` if it compiles for Workers (no Node.j
 ## Implementation Sequence
 
 ### Plan A
-1. Research `legislation.gov.au` API (browse with DevTools, obtain sample AU Act XML)
+1. ~~Research `legislation.gov.au` API~~ ✅ Done — see `docs/legislation-gov-au-api.md`
 2. `src/lex_au/models.py` — AU types, AULegislation, AULegislationSection
 3. `src/lex_au/settings.py` — AU config + Vectorize settings
 4. `src/lex_au/core/embeddings.py` — sentence-transformers + CUDA + BM25 hashing
 5. `src/lex_au/core/vectorize_client.py` — REST upsert client
-6. `src/lex_au/legislation/scraper.py` — AU scraper (based on Step 1 findings)
-7. `src/lex_au/legislation/parser/xml_parser.py` — AU CLML parser
-8. `src/lex_au/legislation/pipeline.py` + `src/lex_au/ingest/` — orchestration + CLI
-9. Test run: `--type act --year 2022 --limit 10`
+6. `src/lex_au/legislation/scraper.py` — REST API client for `api.prod.legislation.gov.au`
+7. `src/lex_au/legislation/parser/docx_parser.py` — DOCX full-text extraction
+8. `src/lex_au/legislation/parser/epub_parser.py` — EPUB HTML → section list
+9. `src/lex_au/legislation/pipeline.py` + `src/lex_au/ingest/` — orchestration + CLI
+10. Test run: `--type act --year 2022 --limit 10`
 
 ### Plan B
 1. Scaffold `workers/lex-au/` with `wrangler`, install Hono
@@ -298,13 +379,16 @@ Consider using `@modelcontextprotocol/sdk` if it compiles for Workers (no Node.j
 
 ## Key Risks
 
-| Risk | Mitigation |
-|---|---|
-| `legislation.gov.au` XML API undocumented | Reverse-engineer from browser DevTools; fallback to bulk XML download packages |
-| AU CLML namespace differences | Obtain sample XML before writing parser |
-| Vectorize sparse vector Worker binding unavailable | Fall back to dense-only search for MVP |
-| BM25 hash mismatch between Python and TypeScript | Write cross-language test with 10 sample texts |
-| Vectorize `getByIds()` unavailable | Use `$in` metadata filter query as fallback |
+| Risk | Status | Mitigation |
+|---|---|---|
+| `legislation.gov.au` API undocumented | ✅ Resolved | REST API at `api.prod.legislation.gov.au` confirmed, no auth needed |
+| AU CLML namespace differences | ✅ N/A | Not using CLML XML — using EPUB HTML instead |
+| EPUB internal HTML structure varies by Act | 🟡 Low | Use `toc.ncx` for ordered file list; fallback to alphabetical HTML file order |
+| Large Acts split across multiple EPUB volumes | 🟡 Medium | Check `volumeNumber` in document metadata; download each volume separately |
+| Vectorize sparse vector Worker binding unavailable | 🟡 Medium | Fall back to dense-only search for MVP |
+| BM25 hash mismatch between Python and TypeScript | 🟡 Low-medium | Write cross-language test with 10 sample texts before deploying Plan B |
+| Vectorize `getByIds()` unavailable | 🟡 Low | Use `$in` metadata filter query as fallback |
+| EPUB unavailable for some old legislation | 🟡 Low | Fall back to `format='Word'` (DOCX) and extract text without section structure |
 
 ---
 
@@ -312,11 +396,13 @@ Consider using `@modelcontextprotocol/sdk` if it compiles for Workers (no Node.j
 
 These existing files are the direct templates for the AU equivalents:
 
-| AU file | Template from |
-|---|---|
-| `src/lex_au/core/embeddings.py` | `src/lex/core/embeddings.py` (replace Azure OAI with sentence-transformers) |
-| `src/lex_au/legislation/scraper.py` | `src/lex/legislation/scraper.py` (rewrite URL patterns) |
-| `src/lex_au/legislation/parser/xml_parser.py` | `src/lex/legislation/parser/xml_parser.py` (update metadata elements) |
-| `src/lex_au/ingest/orchestrator.py` | `src/lex/ingest/orchestrator.py` (replace Qdrant with Vectorize client) |
-| `workers/lex-au/src/routes/legislation.ts` | `src/backend/legislation/search.py` (port two-tier search to TypeScript) |
-| `workers/lex-au/src/vectorize/fusion.ts` | DBSF logic in `src/backend/legislation/search.py` |
+| AU file | Template from | Notes |
+|---|---|---|
+| `src/lex_au/core/embeddings.py` | `src/lex/core/embeddings.py` | Replace Azure OAI with sentence-transformers |
+| `src/lex_au/core/http.py` | `src/lex/core/http.py` | Remove HTTP 436 (UK-specific); base URL → `api.prod.legislation.gov.au` |
+| `src/lex_au/legislation/scraper.py` | **New** — REST API, not a scraper | Uses `httpx` against `/v1/titles`, `/v1/versions`, `/v1/documents` |
+| `src/lex_au/legislation/parser/docx_parser.py` | **New** — no UK equivalent | `zipfile` + `lxml` to extract text from DOCX XML |
+| `src/lex_au/legislation/parser/epub_parser.py` | **New** — no UK equivalent | `zipfile` + `BeautifulSoup` to parse EPUB HTML into sections |
+| `src/lex_au/ingest/orchestrator.py` | `src/lex/ingest/orchestrator.py` | Replace Qdrant with Vectorize client; adapt for two-download pattern |
+| `workers/lex-au/src/routes/legislation.ts` | `src/backend/legislation/search.py` | Port two-tier search to TypeScript |
+| `workers/lex-au/src/vectorize/fusion.ts` | DBSF logic in `src/backend/legislation/search.py` | Min-max normalisation approximation |
