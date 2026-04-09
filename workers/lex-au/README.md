@@ -9,7 +9,7 @@ The included `wrangler.toml` wires the Worker to:
 - `LEGISLATION_INDEX` → Vectorize index `au-legislation`
 - `LEGISLATION_SECTION_INDEX` → Vectorize index `au-legislation-section`
 - `AI` → Workers AI binding
-- `RATE_LIMITER` → Cloudflare native rate limiter binding
+- Rate limiting is configured in the Cloudflare dashboard (not committed in this repo)
 
 The Worker also applies a few built-in public-edge guardrails:
 
@@ -54,19 +54,16 @@ npx wrangler@latest vectorize create-metadata-index au-legislation-section --pro
 npx wrangler@latest vectorize create-metadata-index au-legislation-section --property-name=provision_type --type=string
 ```
 
-## 2) Configure rate-limiter namespace ID
+## 2) Configure rate limiting in Cloudflare dashboard
 
-In `wrangler.toml`, update:
+To keep this repository public-safe, the `RATE_LIMITER` binding is **not** stored in
+`wrangler.toml`.
 
-```toml
-[[unsafe.bindings]]
-name = "RATE_LIMITER"
-type = "ratelimit"
-namespace_id = "1001"  # replace this value
-simple = { limit = 100, period = 60 }
-```
+In Cloudflare dashboard (Worker settings), add a native Rate Limiting binding:
 
-Replace `1001` with your actual Cloudflare rate-limiter namespace ID.
+- Binding name: `RATE_LIMITER`
+- Type: `ratelimit`
+- Rule: `limit = 100`, `period = 60` (or your preferred values)
 
 ## 3) Deploy the worker
 
@@ -97,6 +94,25 @@ After deployment, run the AU ingestion pipeline so vectors are upserted into:
 
 - `au-legislation`
 - `au-legislation-section`
+
+
+## Troubleshooting: `Invalid TOML document` on deploy
+
+If deploy fails with an error like:
+
+```text
+Invalid TOML document: trying to redefine an already defined table or value
+.../workers/lex-au/wrangler.toml:...
+```
+
+check your AI binding stanza in `wrangler.toml`. It must be:
+
+```toml
+[ai]
+binding = "AI"
+```
+
+Do **not** use `[[ai]]` here. `[[ai]]` defines an array-of-tables and causes Wrangler to fail parsing this config.
 
 ## Common checks
 
