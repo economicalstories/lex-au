@@ -27,12 +27,14 @@ class AULegislationPipeline:
         types: list[AULegislationType],
         limit: int | None = None,
         version_spec: str = "latest",
+        resume_after_title_id: str | None = None,
     ) -> Iterator[AULegislation]:
         for payload in self.scraper.iter_title_payloads(
             years=years,
             types=types,
             limit=limit,
             version_spec=version_spec,
+            resume_after_title_id=resume_after_title_id,
         ):
             try:
                 yield self.parser.parse(

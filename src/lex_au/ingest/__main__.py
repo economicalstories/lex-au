@@ -66,6 +66,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Upload batch size used when embeddings and uploads are enabled.",
     )
     parser.add_argument(
+        "--resume-after-title-id",
+        default=None,
+        help="Resume ingest after this title ID (the matching title is skipped).",
+    )
+    parser.add_argument(
+        "--checkpoint-path",
+        default=None,
+        help="Path to a JSON checkpoint file for automatic resume.",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=10,
+        help="Emit friendly progress summary every N ingested titles.",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -100,6 +116,9 @@ def main() -> int:
         skip_embed=args.skip_embed,
         skip_upload=args.skip_upload,
         batch_size=args.batch_size,
+        resume_after_title_id=args.resume_after_title_id,
+        checkpoint_path=args.checkpoint_path,
+        progress_every=args.progress_every,
     )
     print(json.dumps(result, indent=2))
     return 0

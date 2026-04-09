@@ -61,7 +61,22 @@ class HttpClient:
     def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         for attempt in range(1, self.max_retries + 1):
             self._wait_for_request_slot()
-            response = self.session.request(method, url, timeout=self.timeout, **kwargs)
+            try:
+                response = self.session.request(method, url, timeout=self.timeout, **kwargs)
+            except requests.RequestException as exc:
+                if attempt == self.max_retries:
+                    raise requests.ConnectionError(
+                        f"Request failed after {self.max_retries} attempts: {method} {url}"
+                    ) from exc
+                wait_seconds = self.backoff_seconds * (2 ** (attempt - 1))
+                logger.warning(
+                    "Retrying %s %s after request error: %s",
+                    method,
+                    url,
+                    exc,
+                )
+                time.sleep(wait_seconds)
+                continue
 
             if response.status_code not in RETRYABLE_STATUS_CODES:
                 if response.status_code >= 400:
