@@ -13,5 +13,7 @@ index_name = "au-legislation"
 binding = "LEGISLATION_SECTION_INDEX"
 index_name = "au-legislation-section"
 
-[[ai]]
+# Workers AI binding must be a single table (`[ai]`), not an array (`[[ai]]`).
+# Using `[[ai]]` causes Wrangler TOML parse errors: "trying to redefine an already defined table or value".
+[ai]
 binding = "AI"

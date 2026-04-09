@@ -103,3 +103,7 @@ docker-up:
 docker-down:
 	docker compose down
 .PHONY: docker-down
+
+ingest-au-smoke:
+	./scripts/au_ingest_smoke.sh
+.PHONY: ingest-au-smoke

@@ -8,6 +8,7 @@ import { buildSparseVector } from "./sparse";
 import { fuseScores } from "./fusion";
 
 const EMBEDDING_MODEL = "@cf/baai/bge-large-en-v1.5" as const;
+const MAX_TOP_K_WITH_FULL_METADATA = 50;
 
 /** Generate a dense embedding via Workers AI. */
 export async function embedQuery(
@@ -35,7 +36,12 @@ export async function queryIndex(
   options: VectorizeSearchOptions = {},
 ): Promise<VectorizeMatches> {
   const { topK = 20, filter } = options;
-  return index.query(vector, { topK, filter, returnMetadata: "all" });
+  // Cloudflare Vectorize caps full-metadata queries at topK <= 50.
+  return index.query(vector, {
+    topK: Math.min(topK, MAX_TOP_K_WITH_FULL_METADATA),
+    filter,
+    returnMetadata: "all",
+  });
 }
 
 /** Search sections: embed query → query section index → return scored results. */

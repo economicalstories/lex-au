@@ -4,6 +4,7 @@
 
 import { Hono } from "hono";
 import type { Env } from "../env";
+import { parseProxyId } from "../validation";
 
 const AU_WEB_BASE = "https://www.legislation.gov.au";
 
@@ -16,10 +17,10 @@ const proxy = new Hono<{ Bindings: Env }>();
  * The :id param is the title_id (e.g., C2004A01386).
  */
 proxy.get("/:id{.+}", async (c) => {
-  const id = c.req.param("id");
-  if (!id) return c.json({ error: "id is required" }, 400);
+  const parsedId = parseProxyId(c.req.param("id"));
+  if (!parsedId.ok) return c.json({ error: parsedId.error }, 400);
 
-  const targetUrl = `${AU_WEB_BASE}/${id}`;
+  const targetUrl = `${AU_WEB_BASE}/${parsedId.value}`;
 
   // Check Cloudflare cache
   const cacheKey = new Request(targetUrl);

@@ -11,6 +11,13 @@ The included `wrangler.toml` wires the Worker to:
 - `AI` → Workers AI binding
 - Rate limiting is configured in the Cloudflare dashboard (not committed in this repo)
 
+The Worker also applies a few built-in public-edge guardrails:
+
+- rate limiting on `/legislation/*`, `/proxy/*`, and `/mcp`
+- request body limits on JSON endpoints
+- clamped search pagination to keep queries bounded
+- proxy path validation so only safe `legislation.gov.au` paths are fetched
+
 ## Prerequisites
 
 - Node.js 20+
@@ -87,6 +94,25 @@ After deployment, run the AU ingestion pipeline so vectors are upserted into:
 
 - `au-legislation`
 - `au-legislation-section`
+
+
+## Troubleshooting: `Invalid TOML document` on deploy
+
+If deploy fails with an error like:
+
+```text
+Invalid TOML document: trying to redefine an already defined table or value
+.../workers/lex-au/wrangler.toml:...
+```
+
+check your AI binding stanza in `wrangler.toml`. It must be:
+
+```toml
+[ai]
+binding = "AI"
+```
+
+Do **not** use `[[ai]]` here. `[[ai]]` defines an array-of-tables and causes Wrangler to fail parsing this config.
 
 ## Common checks
 

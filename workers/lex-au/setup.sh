@@ -42,12 +42,24 @@ run_or_skip_if_exists \
 
 echo "==> Creating metadata indexes (safe to re-run)"
 run_or_skip_if_exists \
+  "Metadata index au-legislation:id (string)" \
+  vectorize create-metadata-index au-legislation --property-name=id --type=string
+
+run_or_skip_if_exists \
   "Metadata index au-legislation:type (string)" \
   vectorize create-metadata-index au-legislation --property-name=type --type=string
 
 run_or_skip_if_exists \
   "Metadata index au-legislation:year (number)" \
   vectorize create-metadata-index au-legislation --property-name=year --type=number
+
+run_or_skip_if_exists \
+  "Metadata index au-legislation:number (number)" \
+  vectorize create-metadata-index au-legislation --property-name=number --type=number
+
+run_or_skip_if_exists \
+  "Metadata index au-legislation:register_id (string)" \
+  vectorize create-metadata-index au-legislation --property-name=register_id --type=string
 
 run_or_skip_if_exists \
   "Metadata index au-legislation-section:legislation_id (string)" \

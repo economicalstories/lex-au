@@ -26,8 +26,16 @@ const app = new Hono<{ Bindings: Env }>();
 // CORS for all routes
 app.use("*", cors());
 
+// Small default hardening headers for public API responses.
+app.use("*", async (c, next) => {
+  await next();
+  c.res.headers.set("Referrer-Policy", "no-referrer");
+  c.res.headers.set("X-Content-Type-Options", "nosniff");
+});
+
 // Rate limiting on API routes (not health check)
 app.use("/legislation/*", rateLimit);
+app.use("/proxy/*", rateLimit);
 app.use("/mcp", rateLimit);
 app.use("/mcp/*", rateLimit);
 
