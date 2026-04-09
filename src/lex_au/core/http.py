@@ -9,7 +9,7 @@ from typing import Any
 
 import requests
 
-from lex_au.settings import AU_REQUEST_TIMEOUT_SECONDS
+from lex_au.settings import AU_MIN_REQUEST_INTERVAL_SECONDS, AU_REQUEST_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +47,20 @@ class HttpClient:
         timeout: float = AU_REQUEST_TIMEOUT_SECONDS,
         max_retries: int = 5,
         backoff_seconds: float = 1.0,
+        min_request_interval_seconds: float = AU_MIN_REQUEST_INTERVAL_SECONDS,
         session: requests.Session | None = None,
     ):
         self.timeout = timeout
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
+        self.min_request_interval_seconds = max(min_request_interval_seconds, 0.0)
         self.session = session or requests.Session()
         self.session.headers.setdefault("User-Agent", "lex-au/0.1")
+        self._last_request_started_at = 0.0
 
     def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         for attempt in range(1, self.max_retries + 1):
+            self._wait_for_request_slot()
             response = self.session.request(method, url, timeout=self.timeout, **kwargs)
 
             if response.status_code not in RETRYABLE_STATUS_CODES:
@@ -89,6 +93,17 @@ class HttpClient:
             time.sleep(wait_seconds)
 
         raise RuntimeError(f"Request failed unexpectedly: {method} {url}")
+
+    def _wait_for_request_slot(self) -> None:
+        if self.min_request_interval_seconds <= 0:
+            return
+
+        now = time.monotonic()
+        elapsed = now - self._last_request_started_at
+        if self._last_request_started_at and elapsed < self.min_request_interval_seconds:
+            time.sleep(self.min_request_interval_seconds - elapsed)
+
+        self._last_request_started_at = time.monotonic()
 
     def get_json(self, url: str, **kwargs: Any) -> Any:
         response = self.request("GET", url, **kwargs)
