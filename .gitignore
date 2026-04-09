@@ -144,6 +144,11 @@ ENV/
 env.bak/
 venv.bak/
 
+
+.codex
+.agents
+.wrangler
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -249,3 +254,4 @@ src/backend/_version.py
 
 # Frontend build artifacts
 app/tsconfig.tsbuildinfo
+.env
