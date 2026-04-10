@@ -3,8 +3,6 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
-ai = { binding = "AI" }
-
 [[vectorize]]
 binding = "LEGISLATION_INDEX"
 index_name = "au-legislation"
@@ -13,7 +11,7 @@ index_name = "au-legislation"
 binding = "LEGISLATION_SECTION_INDEX"
 index_name = "au-legislation-section"
 
-# Workers AI binding must be a single table (`[ai]`), not an array (`[[ai]]`).
-# Using `[[ai]]` causes Wrangler TOML parse errors: "trying to redefine an already defined table or value".
+# Workers AI binding must be a single table (`[ai]`), not an array (`[[ai]]`)
+# and must not also be declared as an inline table at the top of the file.
 [ai]
 binding = "AI"

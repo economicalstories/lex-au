@@ -7,8 +7,13 @@ import json
 import logging
 import sys
 
+import requests
+
+from lex_au.core.http import APIRequestError
 from lex_au.ingest.orchestrator import resolve_years, run_ingest, setup_vectorize_indexes
 from lex_au.models import AULegislationType
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -100,28 +105,65 @@ def main() -> int:
     )
 
     if args.mode == "setup":
-        result = setup_vectorize_indexes()
+        try:
+            result = setup_vectorize_indexes()
+        except APIRequestError as exc:
+            _report_api_error(exc, verbose=args.verbose)
+            return 2
         print(json.dumps(result, indent=2))
         return 0
 
     years = resolve_years(args.mode, args.year)
     types = [AULegislationType(value) for value in args.type]
 
-    result = run_ingest(
-        years=years,
-        types=types,
-        limit=args.limit,
-        version_spec=args.version_spec,
-        dry_run=args.dry_run,
-        skip_embed=args.skip_embed,
-        skip_upload=args.skip_upload,
-        batch_size=args.batch_size,
-        resume_after_title_id=args.resume_after_title_id,
-        checkpoint_path=args.checkpoint_path,
-        progress_every=args.progress_every,
-    )
+    try:
+        result = run_ingest(
+            years=years,
+            types=types,
+            limit=args.limit,
+            version_spec=args.version_spec,
+            dry_run=args.dry_run,
+            skip_embed=args.skip_embed,
+            skip_upload=args.skip_upload,
+            batch_size=args.batch_size,
+            resume_after_title_id=args.resume_after_title_id,
+            checkpoint_path=args.checkpoint_path,
+            progress_every=args.progress_every,
+        )
+    except APIRequestError as exc:
+        _report_api_error(exc, verbose=args.verbose)
+        return 2
+    except requests.RequestException as exc:
+        _report_generic_request_error(exc, verbose=args.verbose)
+        return 2
     print(json.dumps(result, indent=2))
     return 0
+
+
+def _report_api_error(exc: APIRequestError, *, verbose: bool) -> None:
+    print("\nAU legislation ingest aborted: upstream API error", file=sys.stderr)
+    print(exc.diagnostic_report(), file=sys.stderr)
+    print(
+        "\nRun 'python -m lex_au.core.diagnostics' to probe the API endpoints, "
+        "or re-run with --verbose for full logs.",
+        file=sys.stderr,
+    )
+    if verbose:
+        logger.exception("Underlying APIRequestError: %s", exc)
+
+
+def _report_generic_request_error(exc: Exception, *, verbose: bool) -> None:
+    print(
+        f"\nAU legislation ingest aborted: network/transport error: {exc}",
+        file=sys.stderr,
+    )
+    print(
+        "Run 'python -m lex_au.core.diagnostics' to probe the API endpoints, "
+        "or re-run with --verbose for full logs.",
+        file=sys.stderr,
+    )
+    if verbose:
+        logger.exception("Underlying transport error: %s", exc)
 
 
 if __name__ == "__main__":
