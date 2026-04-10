@@ -96,6 +96,35 @@ def run_diagnostics(
     return results
 
 
+def _probe_error_texts(result: HealthCheckResult) -> list[str]:
+    """Collect all error strings associated with a failing probe."""
+
+    texts: list[str] = []
+    if result.error:
+        texts.append(result.error)
+    for attempt in result.attempts:
+        if attempt.error:
+            texts.append(attempt.error)
+    return texts
+
+
+def _is_timeout_failure(result: HealthCheckResult) -> bool:
+    return any("timeout" in text.lower() for text in _probe_error_texts(result))
+
+
+def _is_server_side_failure(result: HealthCheckResult) -> bool:
+    """Return True when the server responded with 5xx or the request timed out.
+
+    Both cases are symptoms of an upstream problem: the client successfully
+    reached the server (or at least got past DNS/TCP/TLS), so the fix is on
+    the server side, not the client side.
+    """
+
+    if result.status_code and 500 <= result.status_code < 600:
+        return True
+    return _is_timeout_failure(result)
+
+
 def format_report(results: list[HealthCheckResult]) -> str:
     lines: list[str] = ["AU legislation API diagnostics", "=" * 32]
     for result in results:
@@ -119,20 +148,37 @@ def format_report(results: list[HealthCheckResult]) -> str:
     lines.append(f"summary: {ok_count}/{total} probe(s) succeeded")
 
     if ok_count < total:
-        failing_statuses = {r.status_code for r in results if not r.ok}
+        failing = [r for r in results if not r.ok]
+        failing_statuses = {r.status_code for r in failing}
         failing_statuses.discard(None)
-        if failing_statuses == {503}:
-            lines.append(
-                "hint: every failing probe returned 503 Service Unavailable. "
-                "The upstream API is likely degraded or restarting - wait a "
-                "few minutes and retry."
-            )
-        elif 429 in failing_statuses:
+
+        if 429 in failing_statuses:
             lines.append(
                 "hint: rate limiting detected (429). Increase "
                 "AU_MIN_REQUEST_INTERVAL_SECONDS or reduce concurrency."
             )
-        elif any(r.error and "timeout" in r.error.lower() for r in results if not r.ok):
+        elif failing and all(_is_server_side_failure(r) for r in failing):
+            if failing_statuses == {503}:
+                lines.append(
+                    "hint: every failing probe returned 503 Service Unavailable. "
+                    "The upstream API is likely degraded or restarting - wait a "
+                    "few minutes and retry."
+                )
+            else:
+                status_list = (
+                    ", ".join(str(code) for code in sorted(failing_statuses))
+                    if failing_statuses
+                    else "timeouts"
+                )
+                lines.append(
+                    "hint: every failing probe returned a 5xx or timed out "
+                    f"(statuses: {status_list}). This looks like a widespread "
+                    "upstream outage at legislation.gov.au - no client-side "
+                    "change will help. Wait and retry; a simple poll loop is "
+                    "'until python -m lex_au.core.diagnostics; do sleep 300; "
+                    "done'."
+                )
+        elif any(_is_timeout_failure(r) for r in failing):
             lines.append(
                 "hint: timeouts indicate the server accepted the connection "
                 "but did not respond in time. Raise AU_REQUEST_TIMEOUT_SECONDS "
