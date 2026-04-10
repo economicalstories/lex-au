@@ -88,6 +88,126 @@ def test_run_diagnostics_reports_503_failures():
     assert "upstream API is likely degraded" in report
 
 
+def test_format_report_widespread_upstream_outage_detected():
+    """Mix of 5xx statuses and timeouts across tiers -> 'upstream outage' hint.
+
+    Mirrors the real failure the diagnostics tool observed during the
+    legislation.gov.au outage (504 on discovery, read-timeout-then-503 on
+    title fetch, 503 on version find, 500 on the web tier).
+    """
+
+    results = [
+        HealthCheckResult(
+            name="titles discovery",
+            method="GET",
+            url="https://api.example.invalid/v1/titles",
+            ok=False,
+            status_code=504,
+            attempts=[
+                RequestAttempt(
+                    attempt=1,
+                    method="GET",
+                    url="https://api.example.invalid/v1/titles",
+                    status_code=504,
+                    error="HTTP 504",
+                ),
+            ],
+        ),
+        HealthCheckResult(
+            name="fetch single title",
+            method="GET",
+            url="https://api.example.invalid/v1/titles('X')",
+            ok=False,
+            status_code=503,
+            attempts=[
+                RequestAttempt(
+                    attempt=1,
+                    method="GET",
+                    url="https://api.example.invalid/v1/titles('X')",
+                    error="read timeout: ...",
+                ),
+                RequestAttempt(
+                    attempt=2,
+                    method="GET",
+                    url="https://api.example.invalid/v1/titles('X')",
+                    status_code=503,
+                    error="HTTP 503",
+                ),
+            ],
+        ),
+        HealthCheckResult(
+            name="resolve latest version",
+            method="GET",
+            url="https://api.example.invalid/v1/versions/find(...)",
+            ok=False,
+            status_code=503,
+            attempts=[
+                RequestAttempt(
+                    attempt=1,
+                    method="GET",
+                    url="https://api.example.invalid/v1/versions/find(...)",
+                    status_code=503,
+                    error="HTTP 503",
+                ),
+            ],
+        ),
+        HealthCheckResult(
+            name="fetch version text page",
+            method="GET",
+            url="https://web.example.invalid/X/latest/text",
+            ok=False,
+            status_code=500,
+            attempts=[
+                RequestAttempt(
+                    attempt=1,
+                    method="GET",
+                    url="https://web.example.invalid/X/latest/text",
+                    status_code=500,
+                    error="HTTP 500",
+                ),
+            ],
+        ),
+    ]
+
+    report = format_report(results)
+
+    assert "0/4 probe(s) succeeded" in report
+    assert "widespread upstream outage" in report
+    assert "legislation.gov.au" in report
+    # The status list must include every distinct failing code.
+    assert "500" in report
+    assert "503" in report
+    assert "504" in report
+    # It must NOT fall through to the generic "DNS/network reachability" hint.
+    assert "DNS/network" not in report
+
+
+def test_format_report_rate_limit_hint_beats_outage_hint():
+    results = [
+        HealthCheckResult(
+            name="titles discovery",
+            method="GET",
+            url="https://api.example.invalid/v1/titles",
+            ok=False,
+            status_code=429,
+            error="HTTP 429",
+        ),
+        HealthCheckResult(
+            name="fetch single title",
+            method="GET",
+            url="https://api.example.invalid/v1/titles('X')",
+            ok=False,
+            status_code=503,
+            error="HTTP 503",
+        ),
+    ]
+
+    report = format_report(results)
+
+    assert "rate limiting detected" in report
+    assert "widespread upstream outage" not in report
+
+
 def test_format_report_mixes_ok_and_failures():
     results = [
         HealthCheckResult(
