@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Iterator
 
 from lex_au.core.http import HttpClient
 from lex_au.models import AULegislationType, AUTitleSummary, parse_title_id
@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 DOCUMENT_URL_RE = re.compile(
     r"https://www\.legislation\.gov\.au/[^\"']*document_\d+/document_\d+\.html"
 )
+
+ResumeScanCallback = Callable[[AUTitleSummary, bool], None]
+CountProgressCallback = Callable[[int, AULegislationType, int], None]
 
 
 @dataclass(slots=True)
@@ -59,9 +62,11 @@ class AULegislationScraper:
             payload = self.http.get_json(
                 f"{self.api_base_url}/titles",
                 params={
-                    "$select": "id,name,year,number,status,collection,seriesType,isPrincipal",
+                    "$select": (
+                        "id,name,year,number,status,collection,seriesType,isPrincipal,makingDate"
+                    ),
                     "$filter": (
-                        f"startswith(id,'{legislation_type.title_id_prefix(year)}') "
+                        f"year eq {year} "
                         f"and collection eq '{legislation_type.collection_name}' "
                         "and isPrincipal eq true"
                     ),
@@ -76,11 +81,21 @@ class AULegislationScraper:
                 return
 
             for item in items:
+                resolved_year = _resolve_title_year(item, default_year=year)
+                if resolved_year != year:
+                    logger.warning(
+                        "Skipping title %s with unexpected year %s while discovering %s",
+                        item.get("id"),
+                        resolved_year,
+                        year,
+                    )
+                    continue
+
                 parsed_year, parsed_number = parse_title_id(item["id"])
                 yield AUTitleSummary(
                     title_id=item["id"],
                     title=item["name"],
-                    year=item.get("year") or parsed_year or year,
+                    year=resolved_year,
                     number=item.get("number") or parsed_number,
                     status=item.get("status", ""),
                     collection=item["collection"],
@@ -137,6 +152,7 @@ class AULegislationScraper:
         limit: int | None = None,
         version_spec: str = "latest",
         resume_after_title_id: str | None = None,
+        on_resume_scan: ResumeScanCallback | None = None,
     ) -> Iterator[AUTitlePayload]:
         produced = 0
         resuming = resume_after_title_id is not None
@@ -148,7 +164,10 @@ class AULegislationScraper:
 
                 for summary in self.discover_titles(legislation_type, year, remaining):
                     if resuming:
-                        if summary.title_id == resume_after_title_id:
+                        matched_resume_title = summary.title_id == resume_after_title_id
+                        if on_resume_scan is not None:
+                            on_resume_scan(summary, matched_resume_title)
+                        if matched_resume_title:
                             logger.info("Resuming after %s", resume_after_title_id)
                             resuming = False
                         continue
@@ -169,11 +188,21 @@ class AULegislationScraper:
                     if limit is not None and produced >= limit:
                         return
 
+        if resuming:
+            logger.warning(
+                (
+                    "Resume title %s was not found during discovery; "
+                    "no additional titles were processed"
+                ),
+                resume_after_title_id,
+            )
+
     def count_titles(
         self,
         years: list[int],
         types: list[AULegislationType],
         limit: int | None = None,
+        on_progress: CountProgressCallback | None = None,
     ) -> dict[str, int]:
         counts: dict[str, int] = {}
         produced = 0
@@ -190,6 +219,23 @@ class AULegislationScraper:
                 )
                 counts[key] = count
                 produced += count
+                if on_progress is not None:
+                    on_progress(year, legislation_type, count)
 
         counts["total"] = produced
         return counts
+
+
+def _resolve_title_year(item: dict, default_year: int) -> int:
+    value = item.get("year")
+    if isinstance(value, int):
+        return value
+
+    making_date = item.get("makingDate")
+    if isinstance(making_date, str):
+        match = re.match(r"^(?P<year>\d{4})", making_date)
+        if match:
+            return int(match.group("year"))
+
+    parsed_year, _ = parse_title_id(str(item.get("id", "")))
+    return parsed_year or default_year

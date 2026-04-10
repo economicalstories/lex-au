@@ -86,15 +86,57 @@ def run_ingest(
     section_buffer: list[AULegislationSection] = []
     client = None if dry_run or skip_upload else VectorizeClient.from_env()
     start_time = time.monotonic()
+    checkpoint = None
+    checkpoint_resume_title_id = None
+    starting_legislation_count = 0
+    starting_section_count = 0
+    resume_scan_checked = 0
 
     if checkpoint_path:
         checkpoint = _read_checkpoint(Path(checkpoint_path))
         if checkpoint and not resume_after_title_id:
-            resume_after_title_id = checkpoint.get("last_completed_title_id")
+            checkpoint_resume_title_id = checkpoint.get("last_completed_title_id")
+            resume_after_title_id = checkpoint_resume_title_id
             if resume_after_title_id:
                 logger.info("Loaded checkpoint and resuming after %s", resume_after_title_id)
+        elif checkpoint:
+            checkpoint_resume_title_id = checkpoint.get("last_completed_title_id")
 
-    title_counts = pipeline.scraper.count_titles(years=years, types=types, limit=limit)
+        if (
+            checkpoint
+            and resume_after_title_id
+            and checkpoint_resume_title_id == resume_after_title_id
+        ):
+            starting_legislation_count = _coerce_count(checkpoint.get("legislation_count"))
+            starting_section_count = _coerce_count(checkpoint.get("section_count"))
+            if starting_legislation_count or starting_section_count:
+                logger.info(
+                    "Loaded checkpoint totals: %s titles and %s sections already completed",
+                    starting_legislation_count,
+                    starting_section_count,
+                )
+
+    logger.info(
+        "Counting planned titles for %s year(s) and %s type(s) before ingest starts",
+        len(years),
+        len(types),
+    )
+
+    def _on_count_progress(year: int, legislation_type: AULegislationType, count: int) -> None:
+        logger.info(
+            "Counted %s planned %s title(s) for %s",
+            count,
+            legislation_type.value.upper(),
+            year,
+        )
+
+    title_counts = pipeline.scraper.count_titles(
+        years=years,
+        types=types,
+        limit=limit,
+        on_progress=_on_count_progress,
+    )
+    logger.info("Planned title counting complete: %s title(s) in scope", title_counts["total"])
     counts_by_year: dict[int, int] = {year: 0 for year in years}
     done_by_year: dict[int, int] = {year: 0 for year in years}
     counts_by_type: dict[str, int] = {legislation_type.value: 0 for legislation_type in types}
@@ -112,8 +154,8 @@ def run_ingest(
         "years": years,
         "types": [legislation_type.value for legislation_type in types],
         "total_titles_planned": title_counts["total"],
-        "legislation_count": 0,
-        "section_count": 0,
+        "legislation_count": starting_legislation_count,
+        "section_count": starting_section_count,
         "embedded": not skip_embed,
         "uploaded": client is not None,
         "resume_after_title_id": resume_after_title_id,
@@ -121,12 +163,44 @@ def run_ingest(
         "sample": None,
     }
 
+    if resume_after_title_id:
+        if progress_every > 0:
+            logger.info(
+                "Starting resume scan for %s; progress will update every %s checked titles",
+                resume_after_title_id,
+                progress_every,
+            )
+        else:
+            logger.info(
+                "Starting resume scan for %s; periodic progress updates are disabled",
+                resume_after_title_id,
+            )
+
+    def _on_resume_scan(summary, matched: bool) -> None:
+        nonlocal resume_scan_checked
+        resume_scan_checked += 1
+        should_log = resume_scan_checked == 1 or (
+            progress_every > 0 and resume_scan_checked % progress_every == 0
+        )
+        if not should_log:
+            return
+
+        status = "checkpoint found" if matched else "checking prior titles"
+        logger.info(
+            "Resume scan %s title(s) checked while locating %s; latest=%s (%s)",
+            resume_scan_checked,
+            resume_after_title_id,
+            summary.title_id,
+            status,
+        )
+
     for legislation in pipeline.iter_legislation(
         years=years,
         types=types,
         limit=limit,
         version_spec=version_spec,
         resume_after_title_id=resume_after_title_id,
+        on_resume_scan=_on_resume_scan if resume_after_title_id else None,
     ):
         legislation_buffer.append(legislation)
         section_buffer.extend(legislation.sections)
@@ -134,6 +208,7 @@ def run_ingest(
         stats["section_count"] += len(legislation.sections)
         done_by_year[legislation.year] = done_by_year.get(legislation.year, 0) + 1
         done_by_type[legislation.type.value] = done_by_type.get(legislation.type.value, 0) + 1
+        processed_this_run = stats["legislation_count"] - starting_legislation_count
 
         _log_progress(
             current_title_id=legislation.id,
@@ -143,8 +218,9 @@ def run_ingest(
             counts_by_type=counts_by_type,
             done_by_type=done_by_type,
             start_time=start_time,
-            force=stats["legislation_count"] == 1 or (
-                progress_every > 0 and stats["legislation_count"] % progress_every == 0
+            starting_legislation_count=starting_legislation_count,
+            force=processed_this_run == 1 or (
+                progress_every > 0 and processed_this_run % progress_every == 0
             ),
         )
 
@@ -255,6 +331,13 @@ def _write_checkpoint(path: Path, payload: dict) -> None:
         logger.exception("Failed to write checkpoint file %s", path)
 
 
+def _coerce_count(value: object) -> int:
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _percent(processed: int, total: int) -> float:
     if total <= 0:
         return 0.0
@@ -269,6 +352,7 @@ def _log_progress(
     counts_by_type: dict[str, int],
     done_by_type: dict[str, int],
     start_time: float,
+    starting_legislation_count: int,
     force: bool,
 ) -> None:
     if not force:
@@ -277,7 +361,8 @@ def _log_progress(
     total = stats["total_titles_planned"]
     completed = stats["legislation_count"]
     elapsed = max(time.monotonic() - start_time, 1e-6)
-    rate = completed / elapsed
+    completed_this_run = max(completed - starting_legislation_count, 0)
+    rate = completed_this_run / elapsed
     remaining = max(total - completed, 0)
     eta_minutes = remaining / rate / 60 if rate > 0 and remaining > 0 else 0.0
 
@@ -297,6 +382,24 @@ def _log_progress(
         for type_name in sorted(counts_by_type)
     )
 
+    if starting_legislation_count > 0:
+        logger.info(
+            (
+                "Progress %s/%s (%.1f%%), current=%s, this run=%s, resumed=%s, "
+                "ETA=~%.1f min | by year: %s | by type: %s"
+            ),
+            completed,
+            total,
+            _percent(completed, total),
+            current_title_id,
+            completed_this_run,
+            starting_legislation_count,
+            eta_minutes,
+            year_status,
+            type_status,
+        )
+        return
+
     logger.info(
         "Progress %s/%s (%.1f%%), current=%s, ETA=~%.1f min | by year: %s | by type: %s",
         completed,
@@ -314,6 +417,7 @@ def _upload_documents(
     index_name: str,
     documents: Sequence[AULegislation | AULegislationSection],
 ) -> None:
+    logger.info("Preparing %s document(s) for Vectorize index %s", len(documents), index_name)
     texts = [document.get_embedding_text() for document in documents]
     dense_vectors = embed_batch(texts)
     points = [
@@ -325,4 +429,6 @@ def _upload_documents(
         )
         for document, text, dense_vector in zip(documents, texts, dense_vectors)
     ]
+    logger.info("Uploading %s vector(s) to %s", len(points), index_name)
     client.upsert(index_name, points)
+    logger.info("Uploaded %s vector(s) to %s", len(points), index_name)

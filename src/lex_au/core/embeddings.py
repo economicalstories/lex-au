@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
-from collections import Counter
+import logging
+import math
 import re
 import unicodedata
+from collections import Counter
 
-from lex_au.settings import AU_EMBEDDING_BATCH_SIZE, AU_EMBEDDING_MODEL_NAME, AU_SPARSE_HASH_DIMENSIONS
+from lex_au.settings import (
+    AU_EMBEDDING_BATCH_SIZE,
+    AU_EMBEDDING_MODEL_NAME,
+    AU_SPARSE_HASH_DIMENSIONS,
+)
 
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?")
 
 _MODEL = None
+_MODEL_DEVICE = "unknown"
+logger = logging.getLogger(__name__)
 
 
 def _lazy_import_embedding_dependencies():
@@ -27,11 +35,21 @@ def _lazy_import_embedding_dependencies():
 
 
 def get_model(model_name: str = AU_EMBEDDING_MODEL_NAME):
-    global _MODEL
+    global _MODEL, _MODEL_DEVICE
     if _MODEL is None:
         SentenceTransformer, torch = _lazy_import_embedding_dependencies()
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        _MODEL_DEVICE = device
+        if device == "cpu":
+            logger.warning(
+                "CUDA is unavailable for embeddings; loading %s on CPU. "
+                "The first embedding batch may take several minutes.",
+                model_name,
+            )
+        else:
+            logger.info("Loading embedding model %s on %s", model_name, device)
         _MODEL = SentenceTransformer(model_name, device=device)
+        logger.info("Embedding model %s ready on %s", model_name, device)
     return _MODEL
 
 
@@ -40,13 +58,49 @@ def embed_batch(texts: list[str], batch_size: int = AU_EMBEDDING_BATCH_SIZE) -> 
         return []
 
     model = get_model()
-    embeddings = model.encode(
-        texts,
-        batch_size=batch_size,
-        normalize_embeddings=True,
-        show_progress_bar=False,
+    total = len(texts)
+
+    if total <= batch_size:
+        logger.info("Embedding %s text(s) on %s", total, _MODEL_DEVICE)
+        embeddings = model.encode(
+            texts,
+            batch_size=batch_size,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        logger.info("Finished embedding %s text(s)", total)
+        return embeddings.tolist()
+
+    chunk_count = math.ceil(total / batch_size)
+    logger.info(
+        "Embedding %s text(s) on %s in %s chunk(s) of up to %s",
+        total,
+        _MODEL_DEVICE,
+        chunk_count,
+        batch_size,
     )
-    return embeddings.tolist()
+    combined: list[list[float]] = []
+
+    for chunk_number, start in enumerate(range(0, total, batch_size), start=1):
+        end = min(start + batch_size, total)
+        logger.info(
+            "Embedding chunk %s/%s (%s-%s of %s)",
+            chunk_number,
+            chunk_count,
+            start + 1,
+            end,
+            total,
+        )
+        chunk_embeddings = model.encode(
+            texts[start:end],
+            batch_size=min(batch_size, end - start),
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        combined.extend(chunk_embeddings.tolist())
+
+    logger.info("Finished embedding %s text(s)", total)
+    return combined
 
 
 def normalise_text(text: str) -> str:

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
+import logging
+from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 from lex_au.core.http import HttpClient
@@ -14,6 +16,8 @@ from lex_au.settings import (
     CLOUDFLARE_ACCOUNT_ID,
     CLOUDFLARE_API_TOKEN,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -115,8 +119,20 @@ class VectorizeClient:
         batch_size: int = AU_VECTORIZE_BATCH_SIZE,
     ) -> list[dict[str, Any]]:
         responses: list[dict[str, Any]] = []
-        for start in range(0, len(points), batch_size):
+        total = len(points)
+        total_batches = (total + batch_size - 1) // batch_size if total else 0
+
+        for batch_number, start in enumerate(range(0, total, batch_size), start=1):
             batch = points[start : start + batch_size]
+            logger.info(
+                "Vectorize upsert batch %s/%s to %s (%s-%s of %s)",
+                batch_number,
+                total_batches,
+                index_name,
+                start + 1,
+                start + len(batch),
+                total,
+            )
             payload = "\n".join(point.to_ndjson() for point in batch)
             response = self.http.request(
                 "POST",
@@ -125,4 +141,49 @@ class VectorizeClient:
                 data=payload.encode("utf-8"),
             )
             responses.append(response.json())
+            logger.info(
+                "Completed Vectorize upsert batch %s/%s to %s",
+                batch_number,
+                total_batches,
+                index_name,
+            )
         return responses
+
+    def list_vectors(
+        self,
+        index_name: str,
+        *,
+        count: int = 1000,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        page_size = max(1, min(count, 1000))
+        params: dict[str, Any] = {"count": page_size}
+        if cursor:
+            params["cursor"] = cursor
+
+        response = self.http.request(
+            "GET",
+            self._url(f"/vectorize/v2/indexes/{index_name}/list"),
+            headers=self._headers(),
+            params=params,
+        )
+        return response.json().get("result", {})
+
+    def iter_vectors(
+        self,
+        index_name: str,
+        *,
+        count: int = 1000,
+    ) -> Iterator[dict[str, Any]]:
+        cursor: str | None = None
+
+        while True:
+            page = self.list_vectors(index_name, count=count, cursor=cursor)
+            yield page
+
+            if not page.get("isTruncated"):
+                return
+
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return
