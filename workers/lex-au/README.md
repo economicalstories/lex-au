@@ -2,6 +2,15 @@
 
 This directory contains the Cloudflare Worker config for the AU migration (`wrangler.toml`).
 
+## Source & terms of use
+
+All substantive content served by this Worker is derived from the
+[Federal Register of Legislation](https://www.legislation.gov.au) and is
+reused under the
+[legislation.gov.au Terms of Use](https://www.legislation.gov.au/terms-of-use).
+The hosted landing page (`GET /`) surfaces this attribution and links back to
+the original source — do not remove or alter it.
+
 ## What this worker config does
 
 The included `wrangler.toml` wires the Worker to:
@@ -10,6 +19,17 @@ The included `wrangler.toml` wires the Worker to:
 - `LEGISLATION_SECTION_INDEX` → Vectorize index `au-legislation-section`
 - `AI` → Workers AI binding
 - Rate limiting is configured in the Cloudflare dashboard (not committed in this repo)
+
+The Worker exposes:
+
+- `GET /` — mobile-optimised landing page with the MCP endpoint URL (derived
+  from the request host, so there are no local-host callbacks), the copy-paste
+  MCP client config, and the required `legislation.gov.au` attribution.
+- `POST /mcp`, `GET /mcp` — MCP JSON-RPC / SSE endpoint.
+- `POST /legislation/...` — REST endpoints for search, lookup and full text.
+- `GET /proxy/:id` — cached proxy to legislation.gov.au.
+- `GET /health` — health check; the response body advertises the source
+  name, URL and terms-of-use URL.
 
 The Worker also applies a few built-in public-edge guardrails:
 
@@ -74,19 +94,63 @@ npm install
 npx wrangler@latest deploy
 ```
 
-Wrangler will output your Worker URL, typically:
+Wrangler will output your Worker URL. The canonical production deployment
+for this repository is:
 
 ```text
-https://lex-au.<your-subdomain>.workers.dev
+https://lex-au.economicalstories.workers.dev
 ```
+
+If you deploy to a different Cloudflare account the subdomain will differ —
+the landing page at `/` always renders the correct MCP URL for whichever
+deployment you hit, because it is derived from the incoming request host.
 
 ## 4) Connect MCP clients
 
-Point your MCP client to:
+Point your MCP client to the hosted endpoint (no local callbacks). For the
+canonical production deployment use:
 
 ```text
-https://lex-au.<your-subdomain>.workers.dev/mcp
+https://lex-au.economicalstories.workers.dev/mcp
 ```
+
+Or drop this block into your client's MCP config (Claude Desktop, Claude
+Code, Cursor, VS Code, etc.):
+
+```json
+{
+  "mcpServers": {
+    "lex-au": {
+      "type": "http",
+      "url": "https://lex-au.economicalstories.workers.dev/mcp"
+    }
+  }
+}
+```
+
+### Verify the MCP connection
+
+Quick one-shot checks against the hosted endpoint (no local callbacks —
+these hit the real Worker):
+
+```bash
+# Health (also advertises the legislation.gov.au source + terms of use URL)
+curl -s https://lex-au.economicalstories.workers.dev/health | jq
+
+# MCP initialize handshake
+curl -sS https://lex-au.economicalstories.workers.dev/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | jq
+
+# MCP tools/list — should return the 5 AU legislation tools
+curl -sS https://lex-au.economicalstories.workers.dev/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq '.result.tools[].name'
+```
+
+If your Cloudflare account uses a different `workers.dev` subdomain,
+substitute it in the URLs above (or just open the landing page in a
+browser — the copy-paste block on it will already contain the correct URL).
 
 ## 5) Ingest data into Vectorize
 

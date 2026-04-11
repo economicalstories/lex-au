@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "lex": {
+    "lex-au": {
       "type": "http",
-      "url": "https://lex.lab.i.ai.gov.uk/mcp"
+      "url": "https://lex-au.economicalstories.workers.dev/mcp"
     }
   }
 }

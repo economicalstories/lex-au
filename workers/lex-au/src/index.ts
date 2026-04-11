@@ -2,6 +2,7 @@
  * lex-au — Cloudflare Worker MCP server for Australian federal legislation.
  *
  * Routes:
+ *   GET  /                           — mobile-optimised landing page
  *   POST /mcp                        — MCP JSON-RPC endpoint
  *   GET  /mcp                        — MCP SSE stream
  *   POST /legislation/search         — search acts
@@ -11,6 +12,11 @@
  *   POST /legislation/text           — full text
  *   GET  /proxy/:id                  — legislation.gov.au proxy
  *   GET  /health                     — health check
+ *
+ * Source & attribution:
+ *   All substantive content served by this worker is derived from the
+ *   Federal Register of Legislation at https://www.legislation.gov.au and is
+ *   reused under its Terms of Use at https://www.legislation.gov.au/terms-of-use.
  */
 
 import { Hono } from "hono";
@@ -18,6 +24,11 @@ import { cors } from "hono/cors";
 import type { Env } from "./env";
 import { legislation } from "./routes/legislation";
 import { proxy } from "./routes/proxy";
+import {
+  landing,
+  LEGISLATION_SOURCE_URL,
+  LEGISLATION_TERMS_URL,
+} from "./routes/landing";
 import { mcp } from "./mcp/server";
 import { rateLimit } from "./middleware/rateLimit";
 
@@ -33,23 +44,30 @@ app.use("*", async (c, next) => {
   c.res.headers.set("X-Content-Type-Options", "nosniff");
 });
 
-// Rate limiting on API routes (not health check)
+// Rate limiting on API routes (not health check or landing page)
 app.use("/legislation/*", rateLimit);
 app.use("/proxy/*", rateLimit);
 app.use("/mcp", rateLimit);
 app.use("/mcp/*", rateLimit);
 
 // Mount routes
+app.route("/", landing);
 app.route("/legislation", legislation);
 app.route("/proxy", proxy);
 app.route("/mcp", mcp);
 
-// Health check
+// Health check — also advertises source + terms so MCP clients and monitors
+// can surface attribution without scraping the landing page.
 app.get("/health", (c) =>
   c.json({
     status: "ok",
     service: "lex-au",
     version: "0.1.0",
+    source: {
+      name: "Federal Register of Legislation",
+      url: LEGISLATION_SOURCE_URL,
+      terms_of_use: LEGISLATION_TERMS_URL,
+    },
   }),
 );
 

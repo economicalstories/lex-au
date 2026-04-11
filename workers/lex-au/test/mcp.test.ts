@@ -42,15 +42,87 @@ function jsonRpcRequest(method: string, params?: Record<string, unknown>, id: nu
 }
 
 describe("Health endpoint", () => {
-  it("GET /health returns 200", async () => {
+  it("GET /health returns 200 and advertises source attribution", async () => {
     const env = createMockEnv();
     const res = await app.request("/health", {}, env);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("ok");
     expect(body.service).toBe("lex-au");
+    expect(body.source.url).toBe("https://www.legislation.gov.au");
+    expect(body.source.terms_of_use).toBe("https://www.legislation.gov.au/terms-of-use");
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
+  });
+});
+
+describe("Landing page", () => {
+  it("GET / returns a mobile-optimised HTML landing page", async () => {
+    const env = createMockEnv();
+    const res = await app.request(
+      "https://lex-au.example.workers.dev/",
+      {},
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type") ?? "").toContain("text/html");
+    const body = await res.text();
+    // Mobile viewport
+    expect(body).toContain(
+      '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"',
+    );
+    // Derives the public MCP URL from the request host — no local callbacks
+    expect(body).toContain("https://lex-au.example.workers.dev/mcp");
+    expect(body).not.toContain("localhost");
+    expect(body).not.toContain("127.0.0.1");
+    // Links back to the original source + terms of use
+    expect(body).toContain("https://www.legislation.gov.au");
+    expect(body).toContain("https://www.legislation.gov.au/terms-of-use");
+    // Carries the required attribution wording
+    expect(body).toContain(
+      "Based on content from the Federal Register of Legislation",
+    );
+    expect(body).toContain(
+      "For the latest information on Australian Government law please go to https://www.legislation.gov.au",
+    );
+  });
+
+  it("GET / does not make any network callbacks from the client page", async () => {
+    const env = createMockEnv();
+    const res = await app.request(
+      "https://lex-au.example.workers.dev/",
+      {},
+      env,
+    );
+    const body = await res.text();
+    // The only inline script should be the clipboard helper. It must not
+    // fetch from the legislation REST routes or from any other origin.
+    expect(body).not.toMatch(/fetch\s*\(/);
+    expect(body).not.toMatch(/XMLHttpRequest/);
+    expect(body).not.toContain("/legislation/search");
+    expect(body).not.toContain("/legislation/section/search");
+  });
+
+  it("GET / on lex-au.economicalstories.workers.dev renders the canonical MCP URL", async () => {
+    const env = createMockEnv();
+    const res = await app.request(
+      "https://lex-au.economicalstories.workers.dev/",
+      {},
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    // The visible endpoint, the copy-paste MCP config block, and any link
+    // back to the MCP URL must all use the canonical production host.
+    const canonicalMcpUrl = "https://lex-au.economicalstories.workers.dev/mcp";
+    // Appears at least twice: the visible <code id="mcp-endpoint"> and the
+    // JSON config block under <code id="mcp-config">.
+    const occurrences = body.split(canonicalMcpUrl).length - 1;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+    // No other workers.dev subdomain should leak into the page.
+    expect(body).not.toContain("example.workers.dev");
+    expect(body).not.toContain("YOUR-SUBDOMAIN");
+    expect(body).not.toContain("<your-subdomain>");
   });
 });
 
