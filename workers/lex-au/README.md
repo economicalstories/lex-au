@@ -94,34 +94,63 @@ npm install
 npx wrangler@latest deploy
 ```
 
-Wrangler will output your Worker URL, typically:
+Wrangler will output your Worker URL. The canonical production deployment
+for this repository is:
 
 ```text
-https://lex-au.<your-subdomain>.workers.dev
+https://lex-au.economicalstories.workers.dev
 ```
+
+If you deploy to a different Cloudflare account the subdomain will differ —
+the landing page at `/` always renders the correct MCP URL for whichever
+deployment you hit, because it is derived from the incoming request host.
 
 ## 4) Connect MCP clients
 
-Point your MCP client to the hosted endpoint (no local callbacks — the
-landing page at `/` shows the exact URL for the current deployment):
+Point your MCP client to the hosted endpoint (no local callbacks). For the
+canonical production deployment use:
 
 ```text
-https://lex-au.<your-subdomain>.workers.dev/mcp
+https://lex-au.economicalstories.workers.dev/mcp
 ```
 
-Or drop the copy-paste block from the landing page into your client's MCP
-config, e.g.:
+Or drop this block into your client's MCP config (Claude Desktop, Claude
+Code, Cursor, VS Code, etc.):
 
 ```json
 {
   "mcpServers": {
     "lex-au": {
       "type": "http",
-      "url": "https://lex-au.<your-subdomain>.workers.dev/mcp"
+      "url": "https://lex-au.economicalstories.workers.dev/mcp"
     }
   }
 }
 ```
+
+### Verify the MCP connection
+
+Quick one-shot checks against the hosted endpoint (no local callbacks —
+these hit the real Worker):
+
+```bash
+# Health (also advertises the legislation.gov.au source + terms of use URL)
+curl -s https://lex-au.economicalstories.workers.dev/health | jq
+
+# MCP initialize handshake
+curl -sS https://lex-au.economicalstories.workers.dev/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | jq
+
+# MCP tools/list — should return the 5 AU legislation tools
+curl -sS https://lex-au.economicalstories.workers.dev/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq '.result.tools[].name'
+```
+
+If your Cloudflare account uses a different `workers.dev` subdomain,
+substitute it in the URLs above (or just open the landing page in a
+browser — the copy-paste block on it will already contain the correct URL).
 
 ## 5) Ingest data into Vectorize
 

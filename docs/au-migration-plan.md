@@ -335,12 +335,18 @@ Consider using `@modelcontextprotocol/sdk` if it compiles for Workers (no Node.j
 
 ### `.mcp.json` (update repo root)
 
+The canonical production deployment of this repository lives at
+`https://lex-au.economicalstories.workers.dev/mcp` — the committed
+`.mcp.json` points there. Content is sourced from the Federal Register of
+Legislation at `https://www.legislation.gov.au` under its
+[Terms of Use](https://www.legislation.gov.au/terms-of-use).
+
 ```json
 {
   "mcpServers": {
     "lex-au": {
       "type": "http",
-      "url": "https://lex-au.YOUR-SUBDOMAIN.workers.dev/mcp"
+      "url": "https://lex-au.economicalstories.workers.dev/mcp"
     }
   }
 }

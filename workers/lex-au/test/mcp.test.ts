@@ -102,6 +102,28 @@ describe("Landing page", () => {
     expect(body).not.toContain("/legislation/search");
     expect(body).not.toContain("/legislation/section/search");
   });
+
+  it("GET / on lex-au.economicalstories.workers.dev renders the canonical MCP URL", async () => {
+    const env = createMockEnv();
+    const res = await app.request(
+      "https://lex-au.economicalstories.workers.dev/",
+      {},
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    // The visible endpoint, the copy-paste MCP config block, and any link
+    // back to the MCP URL must all use the canonical production host.
+    const canonicalMcpUrl = "https://lex-au.economicalstories.workers.dev/mcp";
+    // Appears at least twice: the visible <code id="mcp-endpoint"> and the
+    // JSON config block under <code id="mcp-config">.
+    const occurrences = body.split(canonicalMcpUrl).length - 1;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+    // No other workers.dev subdomain should leak into the page.
+    expect(body).not.toContain("example.workers.dev");
+    expect(body).not.toContain("YOUR-SUBDOMAIN");
+    expect(body).not.toContain("<your-subdomain>");
+  });
 });
 
 describe("MCP protocol", () => {
