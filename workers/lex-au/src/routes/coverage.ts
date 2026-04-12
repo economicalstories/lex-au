@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import type { Env } from "../env";
-import { embedQuery, queryIndex } from "../vectorize/client";
 
 type CoverageType = "act" | "li" | "ni";
 
@@ -8,6 +7,7 @@ interface CoverageFilters {
   yearFrom: number;
   yearTo: number;
   types: CoverageType[];
+  maxIdsToCheck: number;
 }
 
 interface CoverageResult {
@@ -24,6 +24,8 @@ const TYPE_TO_COLLECTION: Record<CoverageType, string> = {
   li: "LegislativeInstrument",
   ni: "NotifiableInstrument",
 };
+const MAX_IDS_TO_CHECK_HARD_CAP = 4000;
+const VECTORIZE_GET_BY_IDS_BATCH = 100;
 
 const coverage = new Hono<{ Bindings: Env }>();
 
@@ -39,6 +41,7 @@ coverage.get("/coverage", async (c) => {
   const query = new URLSearchParams();
   query.set("year_from", String(filters.yearFrom));
   query.set("year_to", String(filters.yearTo));
+  query.set("max_ids", String(filters.maxIdsToCheck));
   for (const type of filters.types) query.append("type", type);
 
   return c.html(`<!doctype html>
@@ -71,71 +74,21 @@ coverage.get("/coverage", async (c) => {
       --warn: #f59e0b;
     }
   }
-  body {
-    margin: 0;
-    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--fg);
-    padding: 16px;
-  }
+  body { margin: 0; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); padding: 16px; }
   main { max-width: var(--max); margin: 0 auto; }
   h1 { margin: 0 0 8px; }
   p { margin: 0 0 12px; color: var(--muted); }
-  form {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--card);
-    margin-bottom: 14px;
-  }
+  form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); margin-bottom: 14px; }
   label { font-size: 0.9rem; color: var(--muted); display: block; margin-bottom: 6px; }
-  input, select, button {
-    width: 100%;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 8px 10px;
-    background: var(--bg);
-    color: var(--fg);
-    min-height: 40px;
-  }
-  button {
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent);
-    font-weight: 600;
-    cursor: pointer;
-    align-self: end;
-  }
-  .cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 10px;
-    margin: 12px 0 16px;
-  }
-  .card {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px;
-    background: var(--card);
-  }
+  input, select, button { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg); color: var(--fg); min-height: 40px; }
+  button { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; cursor: pointer; align-self: end; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 12px 0 16px; }
+  .card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--card); }
   .card h2 { margin: 0; font-size: 0.95rem; color: var(--muted); }
   .metric { margin-top: 6px; font-size: 1.5rem; font-weight: 700; }
   .metric.ok { color: var(--ok); }
   .metric.warn { color: var(--warn); }
-  ul {
-    margin: 0;
-    padding-left: 1.25rem;
-    max-height: 320px;
-    overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--card);
-    padding-top: 10px;
-    padding-bottom: 10px;
-  }
+  ul { margin: 0; padding-left: 1.25rem; max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding-top: 10px; padding-bottom: 10px; }
   li { margin: 4px 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .links { margin-top: 12px; }
   a { color: var(--accent); }
@@ -144,7 +97,7 @@ coverage.get("/coverage", async (c) => {
 <body>
 <main>
   <h1>Coverage dashboard</h1>
-  <p>Compare source-of-truth titles from legislation.gov.au against vectors indexed in Cloudflare Vectorize.</p>
+  <p>Compares source-of-truth titles from legislation.gov.au against vectors indexed in Cloudflare Vectorize.</p>
 
   <form method="get" action="/coverage">
     <div>
@@ -165,27 +118,19 @@ coverage.get("/coverage", async (c) => {
       </select>
     </div>
     <div>
+      <label for="max_ids">Max IDs to check</label>
+      <input id="max_ids" name="max_ids" type="number" min="100" max="${MAX_IDS_TO_CHECK_HARD_CAP}" step="100" value="${filters.maxIdsToCheck}" />
+    </div>
+    <div>
       <button type="submit">Run check</button>
     </div>
   </form>
 
   <section class="cards" aria-label="coverage summary">
-    <article class="card">
-      <h2>Expected titles</h2>
-      <div class="metric">${expectedCount}</div>
-    </article>
-    <article class="card">
-      <h2>Indexed titles</h2>
-      <div class="metric">${indexedCount}</div>
-    </article>
-    <article class="card">
-      <h2>Missing titles</h2>
-      <div class="metric ${missingCount > 0 ? "warn" : "ok"}">${missingCount}</div>
-    </article>
-    <article class="card">
-      <h2>Coverage</h2>
-      <div class="metric ${coveragePct < 100 ? "warn" : "ok"}">${coveragePct.toFixed(2)}%</div>
-    </article>
+    <article class="card"><h2>Expected titles (checked)</h2><div class="metric">${expectedCount}</div></article>
+    <article class="card"><h2>Indexed titles</h2><div class="metric">${indexedCount}</div></article>
+    <article class="card"><h2>Missing titles</h2><div class="metric ${missingCount > 0 ? "warn" : "ok"}">${missingCount}</div></article>
+    <article class="card"><h2>Coverage</h2><div class="metric ${coveragePct < 100 ? "warn" : "ok"}">${coveragePct.toFixed(2)}%</div></article>
   </section>
 
   ${result.warnings.length > 0 ? `<div style="border:1px solid var(--warn); border-radius:10px; padding:10px; margin:12px 0;">${result.warnings.map((w) => `<p style="margin:0 0 4px; color:var(--warn)">${escapeHtml(w)}</p>`).join("")}</div>` : ""}
@@ -195,9 +140,7 @@ coverage.get("/coverage", async (c) => {
     ${result.missingIds.slice(0, 200).map((id) => `<li>${escapeHtml(id)}</li>`).join("") || "<li>None</li>"}
   </ul>
 
-  <p class="links">
-    JSON: <a href="/coverage.json?${query.toString()}">/coverage.json</a>
-  </p>
+  <p class="links">JSON: <a href="/coverage.json?${query.toString()}">/coverage.json</a></p>
 </main>
 </body>
 </html>`);
@@ -221,7 +164,7 @@ coverage.get("/coverage.json", async (c) => {
   return c.json({
     filters,
     totals: {
-      expected: expectedCount,
+      expected_checked: expectedCount,
       indexed: indexedCount,
       missing: missingCount,
       coverage_pct: Number(coveragePct.toFixed(4)),
@@ -238,7 +181,16 @@ coverage.get("/coverage.json", async (c) => {
 });
 
 async function buildCoverage(env: Env, filters: CoverageFilters): Promise<CoverageResult> {
-  const { ids: expectedIds, warnings } = await fetchSourceIds(filters);
+  const { ids: sourceIds, warnings } = await fetchSourceIds(filters);
+
+  let expectedIds = sourceIds;
+  if (sourceIds.length > filters.maxIdsToCheck) {
+    expectedIds = sourceIds.slice(0, filters.maxIdsToCheck);
+    warnings.push(
+      `Checked first ${filters.maxIdsToCheck} IDs out of ${sourceIds.length} source IDs to stay within Worker subrequest limits. Narrow filters for full-fidelity checks.`,
+    );
+  }
+
   const indexedIds = await fetchIndexedIds(env, expectedIds);
   const indexedSet = new Set(indexedIds);
   const missingIds = expectedIds.filter((id) => !indexedSet.has(id));
@@ -258,53 +210,46 @@ async function fetchSourceIds(
   const discovered = new Set<string>();
   const warnings: string[] = [];
 
-  for (let year = filters.yearFrom; year <= filters.yearTo; year += 1) {
-    for (const type of filters.types) {
-      const collection = TYPE_TO_COLLECTION[type];
-      let skip = 0;
-      const top = 200;
-      let usePrincipalFilter = true;
+  for (const type of filters.types) {
+    const collection = TYPE_TO_COLLECTION[type];
+    let skip = 0;
+    const top = 500;
+    let usePrincipalFilter = true;
 
-      while (true) {
-        const filterText = usePrincipalFilter
-          ? `year eq ${year} and collection eq '${collection}' and isPrincipal eq true`
-          : `year eq ${year} and collection eq '${collection}'`;
+    while (true) {
+      const filterText = usePrincipalFilter
+        ? `year ge ${filters.yearFrom} and year le ${filters.yearTo} and collection eq '${collection}' and isPrincipal eq true`
+        : `year ge ${filters.yearFrom} and year le ${filters.yearTo} and collection eq '${collection}'`;
 
-        const params = new URLSearchParams({
-          "$select": "id",
-          "$filter": filterText,
-          "$orderby": "id",
-          "$top": String(top),
-          "$skip": String(skip),
-        });
+      const params = new URLSearchParams({
+        "$select": "id",
+        "$filter": filterText,
+        "$orderby": "id",
+        "$top": String(top),
+        "$skip": String(skip),
+      });
 
-        const response = await fetch(`${SOURCE_API_BASE}/titles?${params.toString()}`);
-        if (!response.ok) {
-          if (response.status === 400 && usePrincipalFilter) {
-            usePrincipalFilter = false;
-            skip = 0;
-            warnings.push(`Source API rejected isPrincipal filter for ${type}:${year}; retried without it.`);
-            continue;
-          }
-
-          if (response.status === 400) {
-            warnings.push(`Skipping invalid source query for ${type}:${year} (HTTP 400).`);
-            break;
-          }
-
-          warnings.push(`Source API failed for ${type}:${year} (HTTP ${response.status}).`);
-          break;
+      const response = await fetch(`${SOURCE_API_BASE}/titles?${params.toString()}`);
+      if (!response.ok) {
+        if (response.status === 400 && usePrincipalFilter) {
+          usePrincipalFilter = false;
+          skip = 0;
+          warnings.push(`Source API rejected isPrincipal filter for ${type}; retried without it.`);
+          continue;
         }
 
-        const body = await response.json<{ value?: Array<{ id?: string }> }>();
-        const items = body.value ?? [];
-        for (const item of items) {
-          if (item.id) discovered.add(item.id);
-        }
-
-        if (items.length < top) break;
-        skip += items.length;
+        warnings.push(`Source API failed for ${type} (HTTP ${response.status}).`);
+        break;
       }
+
+      const body = await response.json<{ value?: Array<{ id?: string }> }>();
+      const items = body.value ?? [];
+      for (const item of items) {
+        if (item.id) discovered.add(item.id);
+      }
+
+      if (items.length < top) break;
+      skip += items.length;
     }
   }
 
@@ -314,31 +259,16 @@ async function fetchSourceIds(
 async function fetchIndexedIds(env: Env, expectedIds: string[]): Promise<string[]> {
   if (expectedIds.length === 0) return [];
 
-  const probeVector = await embedQuery(env.AI, "coverage probe");
   const indexedIds = new Set<string>();
 
-  const concurrency = 8;
-  let cursor = 0;
-
-  async function worker(): Promise<void> {
-    while (true) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= expectedIds.length) return;
-
-      const id = expectedIds[index]!;
-      const matches = await queryIndex(env.LEGISLATION_INDEX, probeVector, {
-        topK: 1,
-        filter: { id },
-      });
-
-      if ((matches.matches?.length ?? 0) > 0) {
-        indexedIds.add(id);
-      }
+  for (let i = 0; i < expectedIds.length; i += VECTORIZE_GET_BY_IDS_BATCH) {
+    const chunk = expectedIds.slice(i, i + VECTORIZE_GET_BY_IDS_BATCH);
+    const vectors = await env.LEGISLATION_INDEX.getByIds(chunk);
+    for (const vector of vectors) {
+      if (vector.id) indexedIds.add(vector.id);
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(concurrency, expectedIds.length) }, () => worker()));
   return Array.from(indexedIds).sort();
 }
 
@@ -346,7 +276,7 @@ function parseFilters(rawUrl: string): CoverageFilters {
   const url = new URL(rawUrl);
   const now = new Date().getUTCFullYear();
 
-  let yearFrom = parsePositiveInt(url.searchParams.get("year_from"), 1901);
+  let yearFrom = parsePositiveInt(url.searchParams.get("year_from"), now);
   let yearTo = parsePositiveInt(url.searchParams.get("year_to"), now);
   if (yearFrom > yearTo) {
     [yearFrom, yearTo] = [yearTo, yearFrom];
@@ -359,7 +289,10 @@ function parseFilters(rawUrl: string): CoverageFilters {
       ? [requestedType]
       : ["act"];
 
-  return { yearFrom, yearTo, types };
+  const requestedMaxIds = parsePositiveInt(url.searchParams.get("max_ids"), 2000);
+  const maxIdsToCheck = Math.min(Math.max(requestedMaxIds, 100), MAX_IDS_TO_CHECK_HARD_CAP);
+
+  return { yearFrom, yearTo, types, maxIdsToCheck };
 }
 
 function parsePositiveInt(value: string | null | undefined, defaultValue: number): number {
