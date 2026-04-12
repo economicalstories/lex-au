@@ -15,6 +15,7 @@ interface CoverageResult {
   expectedIds: string[];
   indexedIds: string[];
   missingIds: string[];
+  warnings: string[];
 }
 
 const SOURCE_API_BASE = "https://api.prod.legislation.gov.au/v1";
@@ -187,6 +188,8 @@ coverage.get("/coverage", async (c) => {
     </article>
   </section>
 
+  ${result.warnings.length > 0 ? `<div style="border:1px solid var(--warn); border-radius:10px; padding:10px; margin:12px 0;">${result.warnings.map((w) => `<p style="margin:0 0 4px; color:var(--warn)">${escapeHtml(w)}</p>`).join("")}</div>` : ""}
+
   <h2>Missing IDs (first 200)</h2>
   <ul>
     ${result.missingIds.slice(0, 200).map((id) => `<li>${escapeHtml(id)}</li>`).join("") || "<li>None</li>"}
@@ -230,11 +233,12 @@ coverage.get("/coverage.json", async (c) => {
       total_pages: Math.max(1, Math.ceil(missingCount / pageSize)),
     },
     missing_ids: pagedMissingIds,
+    warnings: result.warnings,
   });
 });
 
 async function buildCoverage(env: Env, filters: CoverageFilters): Promise<CoverageResult> {
-  const expectedIds = await fetchSourceIds(filters);
+  const { ids: expectedIds, warnings } = await fetchSourceIds(filters);
   const indexedIds = await fetchIndexedIds(env, expectedIds);
   const indexedSet = new Set(indexedIds);
   const missingIds = expectedIds.filter((id) => !indexedSet.has(id));
@@ -244,22 +248,31 @@ async function buildCoverage(env: Env, filters: CoverageFilters): Promise<Covera
     expectedIds,
     indexedIds,
     missingIds,
+    warnings,
   };
 }
 
-async function fetchSourceIds(filters: CoverageFilters): Promise<string[]> {
+async function fetchSourceIds(
+  filters: CoverageFilters,
+): Promise<{ ids: string[]; warnings: string[] }> {
   const discovered = new Set<string>();
+  const warnings: string[] = [];
 
   for (let year = filters.yearFrom; year <= filters.yearTo; year += 1) {
     for (const type of filters.types) {
       const collection = TYPE_TO_COLLECTION[type];
       let skip = 0;
       const top = 200;
+      let usePrincipalFilter = true;
 
       while (true) {
+        const filterText = usePrincipalFilter
+          ? `year eq ${year} and collection eq '${collection}' and isPrincipal eq true`
+          : `year eq ${year} and collection eq '${collection}'`;
+
         const params = new URLSearchParams({
-          "$select": "id,year,isPrincipal",
-          "$filter": `year eq ${year} and collection eq '${collection}' and isPrincipal eq true`,
+          "$select": "id",
+          "$filter": filterText,
           "$orderby": "id",
           "$top": String(top),
           "$skip": String(skip),
@@ -267,7 +280,20 @@ async function fetchSourceIds(filters: CoverageFilters): Promise<string[]> {
 
         const response = await fetch(`${SOURCE_API_BASE}/titles?${params.toString()}`);
         if (!response.ok) {
-          throw new Error(`Source API failed for ${type}:${year} (${response.status})`);
+          if (response.status === 400 && usePrincipalFilter) {
+            usePrincipalFilter = false;
+            skip = 0;
+            warnings.push(`Source API rejected isPrincipal filter for ${type}:${year}; retried without it.`);
+            continue;
+          }
+
+          if (response.status === 400) {
+            warnings.push(`Skipping invalid source query for ${type}:${year} (HTTP 400).`);
+            break;
+          }
+
+          warnings.push(`Source API failed for ${type}:${year} (HTTP ${response.status}).`);
+          break;
         }
 
         const body = await response.json<{ value?: Array<{ id?: string }> }>();
@@ -282,7 +308,7 @@ async function fetchSourceIds(filters: CoverageFilters): Promise<string[]> {
     }
   }
 
-  return Array.from(discovered).sort();
+  return { ids: Array.from(discovered).sort(), warnings };
 }
 
 async function fetchIndexedIds(env: Env, expectedIds: string[]): Promise<string[]> {
