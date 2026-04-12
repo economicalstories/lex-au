@@ -18,12 +18,7 @@ interface CoverageResult {
   warnings: string[];
 }
 
-const SOURCE_API_BASE = "https://api.prod.legislation.gov.au/v1";
-const TYPE_TO_COLLECTION: Record<CoverageType, string> = {
-  act: "Act",
-  li: "LegislativeInstrument",
-  ni: "NotifiableInstrument",
-};
+const SOURCE_WEB_BASE = "https://www.legislation.gov.au";
 const MAX_IDS_TO_CHECK_HARD_CAP = 4000;
 const VECTORIZE_GET_BY_IDS_BATCH = 100;
 const MAX_YEAR_SPAN = 5;
@@ -226,39 +221,71 @@ async function fetchSourceIds(
   const warnings: string[] = [];
 
   for (let year = filters.yearFrom; year <= filters.yearTo; year += 1) {
+    const feedIdsByType = await fetchYearIdsFromFeed(year, warnings);
     for (const type of filters.types) {
-      const collection = TYPE_TO_COLLECTION[type];
-      let skip = 0;
-      const top = 200;
-
-      while (true) {
-        const params = new URLSearchParams({
-          "$select": "id",
-          "$filter": `year eq ${year} and collection eq '${collection}'`,
-          "$orderby": "id",
-          "$top": String(top),
-          "$skip": String(skip),
-        });
-
-        const response = await fetch(`${SOURCE_API_BASE}/titles?${params.toString()}`);
-        if (!response.ok) {
-          warnings.push(`Source API failed for ${type}:${year} (HTTP ${response.status}).`);
-          break;
-        }
-
-        const body = await response.json<{ value?: Array<{ id?: string }> }>();
-        const items = body.value ?? [];
-        for (const item of items) {
-          if (item.id) discovered.add(item.id);
-        }
-
-        if (items.length < top) break;
-        skip += items.length;
+      for (const id of feedIdsByType[type]) {
+        discovered.add(id);
       }
     }
   }
 
   return { ids: Array.from(discovered).sort(), warnings };
+}
+
+async function fetchYearIdsFromFeed(
+  year: number,
+  warnings: string[],
+): Promise<Record<CoverageType, Set<string>>> {
+  const byType: Record<CoverageType, Set<string>> = {
+    act: new Set<string>(),
+    li: new Set<string>(),
+    ni: new Set<string>(),
+  };
+
+  for (let page = 1; page <= 200; page += 1) {
+    const url = `${SOURCE_WEB_BASE}/primary+secondary/${year}/data.feed?page=${page}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      if (page === 1) {
+        warnings.push(`Source feed failed for ${year} (HTTP ${response.status}).`);
+      }
+      break;
+    }
+
+    const xml = await response.text();
+    const ids = extractTitleIdsFromFeed(xml);
+    if (ids.length === 0) break;
+
+    for (const id of ids) {
+      const type = typeFromTitleId(id);
+      if (type) byType[type].add(id);
+    }
+
+    if (!xml.includes('rel="next"')) break;
+  }
+
+  return byType;
+}
+
+function extractTitleIdsFromFeed(xml: string): string[] {
+  const ids = new Set<string>();
+  const titleIdPattern = /(?:id|href)="[^"]*\/([CF]\d{4}[ALN]\d{5})(?:["/\?#]|$)/g;
+
+  let match = titleIdPattern.exec(xml);
+  while (match) {
+    ids.add(match[1]!);
+    match = titleIdPattern.exec(xml);
+  }
+
+  return Array.from(ids);
+}
+
+function typeFromTitleId(titleId: string): CoverageType | null {
+  const marker = titleId[5];
+  if (marker === "A") return "act";
+  if (marker === "L") return "li";
+  if (marker === "N") return "ni";
+  return null;
 }
 
 async function fetchIndexedIds(env: Env, expectedIds: string[]): Promise<string[]> {
