@@ -11,6 +11,8 @@
  *   POST /legislation/section/lookup — sections by legislation_id
  *   POST /legislation/text           — full text
  *   GET  /proxy/:id                  — legislation.gov.au proxy
+ *   GET  /coverage                  — index coverage dashboard
+ *   GET  /coverage.json             — index coverage data
  *   GET  /health                     — health check
  *
  * Source & attribution:
@@ -24,6 +26,7 @@ import { cors } from "hono/cors";
 import type { Env } from "./env";
 import { legislation } from "./routes/legislation";
 import { proxy } from "./routes/proxy";
+import { coverage } from "./routes/coverage";
 import {
   landing,
   LEGISLATION_SOURCE_URL,
@@ -55,6 +58,7 @@ app.route("/", landing);
 app.route("/legislation", legislation);
 app.route("/proxy", proxy);
 app.route("/mcp", mcp);
+app.route("/", coverage);
 
 // Health check — also advertises source + terms so MCP clients and monitors
 // can surface attribution without scraping the landing page.

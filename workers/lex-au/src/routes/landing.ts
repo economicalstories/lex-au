@@ -232,6 +232,11 @@ function renderLandingPage({ mcpUrl, today }: LandingContext): string {
     </p>
   </section>
 
+  <section aria-labelledby="ops">
+    <h2 id="ops">Operations</h2>
+    <p>Need to validate corpus indexing status quickly? Open the <a href="/coverage">coverage dashboard</a>.</p>
+  </section>
+
   <section aria-labelledby="tools">
     <h2 id="tools">What the MCP server exposes</h2>
     <ul>
