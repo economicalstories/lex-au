@@ -26,6 +26,7 @@ const TYPE_TO_COLLECTION: Record<CoverageType, string> = {
 };
 const MAX_IDS_TO_CHECK_HARD_CAP = 4000;
 const VECTORIZE_GET_BY_IDS_BATCH = 100;
+const MAX_YEAR_SPAN = 5;
 
 const coverage = new Hono<{ Bindings: Env }>();
 
@@ -78,10 +79,10 @@ coverage.get("/coverage", async (c) => {
   main { max-width: var(--max); margin: 0 auto; }
   h1 { margin: 0 0 8px; }
   p { margin: 0 0 12px; color: var(--muted); }
-  form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); margin-bottom: 14px; }
+  form { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); margin-bottom: 14px; align-items: end; }
   label { font-size: 0.9rem; color: var(--muted); display: block; margin-bottom: 6px; }
   input, select, button { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg); color: var(--fg); min-height: 40px; }
-  button { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; cursor: pointer; align-self: end; }
+  button { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; cursor: pointer; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 12px 0 16px; }
   .card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--card); }
   .card h2 { margin: 0; font-size: 0.95rem; color: var(--muted); }
@@ -92,6 +93,10 @@ coverage.get("/coverage", async (c) => {
   li { margin: 4px 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .links { margin-top: 12px; }
   a { color: var(--accent); }
+  .actions { display: flex; gap: 10px; align-items: end; }
+  .actions button { max-width: 220px; }
+  @media (max-width: 860px) { form { grid-template-columns: repeat(2, minmax(160px, 1fr)); } }
+  @media (max-width: 520px) { form { grid-template-columns: 1fr; } .actions button { max-width: none; } }
 </style>
 </head>
 <body>
@@ -121,7 +126,7 @@ coverage.get("/coverage", async (c) => {
       <label for="max_ids">Max IDs to check</label>
       <input id="max_ids" name="max_ids" type="number" min="100" max="${MAX_IDS_TO_CHECK_HARD_CAP}" step="100" value="${filters.maxIdsToCheck}" />
     </div>
-    <div>
+    <div class="actions">
       <button type="submit">Run check</button>
     </div>
   </form>
@@ -162,7 +167,7 @@ coverage.get("/coverage.json", async (c) => {
   const pagedMissingIds = result.missingIds.slice(start, start + pageSize);
 
   return c.json({
-    filters,
+    filters: result.filters,
     totals: {
       expected_checked: expectedCount,
       indexed: indexedCount,
@@ -181,7 +186,17 @@ coverage.get("/coverage.json", async (c) => {
 });
 
 async function buildCoverage(env: Env, filters: CoverageFilters): Promise<CoverageResult> {
-  const { ids: sourceIds, warnings } = await fetchSourceIds(filters);
+  const warnings: string[] = [];
+  let effectiveFilters = filters;
+  const span = filters.yearTo - filters.yearFrom + 1;
+  if (span > MAX_YEAR_SPAN) {
+    effectiveFilters = { ...filters, yearTo: filters.yearFrom + MAX_YEAR_SPAN - 1 };
+    warnings.push(`Year range limited to ${MAX_YEAR_SPAN} years per request (${effectiveFilters.yearFrom}-${effectiveFilters.yearTo}) to keep coverage checks fast and reliable.`);
+  }
+
+  const sourceResult = await fetchSourceIds(effectiveFilters);
+  warnings.push(...sourceResult.warnings);
+  const sourceIds = sourceResult.ids;
 
   let expectedIds = sourceIds;
   if (sourceIds.length > filters.maxIdsToCheck) {
@@ -196,7 +211,7 @@ async function buildCoverage(env: Env, filters: CoverageFilters): Promise<Covera
   const missingIds = expectedIds.filter((id) => !indexedSet.has(id));
 
   return {
-    filters,
+    filters: effectiveFilters,
     expectedIds,
     indexedIds,
     missingIds,
@@ -210,46 +225,36 @@ async function fetchSourceIds(
   const discovered = new Set<string>();
   const warnings: string[] = [];
 
-  for (const type of filters.types) {
-    const collection = TYPE_TO_COLLECTION[type];
-    let skip = 0;
-    const top = 500;
-    let usePrincipalFilter = true;
+  for (let year = filters.yearFrom; year <= filters.yearTo; year += 1) {
+    for (const type of filters.types) {
+      const collection = TYPE_TO_COLLECTION[type];
+      let skip = 0;
+      const top = 200;
 
-    while (true) {
-      const filterText = usePrincipalFilter
-        ? `year ge ${filters.yearFrom} and year le ${filters.yearTo} and collection eq '${collection}' and isPrincipal eq true`
-        : `year ge ${filters.yearFrom} and year le ${filters.yearTo} and collection eq '${collection}'`;
+      while (true) {
+        const params = new URLSearchParams({
+          "$select": "id",
+          "$filter": `year eq ${year} and collection eq '${collection}'`,
+          "$orderby": "id",
+          "$top": String(top),
+          "$skip": String(skip),
+        });
 
-      const params = new URLSearchParams({
-        "$select": "id",
-        "$filter": filterText,
-        "$orderby": "id",
-        "$top": String(top),
-        "$skip": String(skip),
-      });
-
-      const response = await fetch(`${SOURCE_API_BASE}/titles?${params.toString()}`);
-      if (!response.ok) {
-        if (response.status === 400 && usePrincipalFilter) {
-          usePrincipalFilter = false;
-          skip = 0;
-          warnings.push(`Source API rejected isPrincipal filter for ${type}; retried without it.`);
-          continue;
+        const response = await fetch(`${SOURCE_API_BASE}/titles?${params.toString()}`);
+        if (!response.ok) {
+          warnings.push(`Source API failed for ${type}:${year} (HTTP ${response.status}).`);
+          break;
         }
 
-        warnings.push(`Source API failed for ${type} (HTTP ${response.status}).`);
-        break;
-      }
+        const body = await response.json<{ value?: Array<{ id?: string }> }>();
+        const items = body.value ?? [];
+        for (const item of items) {
+          if (item.id) discovered.add(item.id);
+        }
 
-      const body = await response.json<{ value?: Array<{ id?: string }> }>();
-      const items = body.value ?? [];
-      for (const item of items) {
-        if (item.id) discovered.add(item.id);
+        if (items.length < top) break;
+        skip += items.length;
       }
-
-      if (items.length < top) break;
-      skip += items.length;
     }
   }
 
@@ -276,7 +281,7 @@ function parseFilters(rawUrl: string): CoverageFilters {
   const url = new URL(rawUrl);
   const now = new Date().getUTCFullYear();
 
-  let yearFrom = parsePositiveInt(url.searchParams.get("year_from"), now);
+  let yearFrom = parsePositiveInt(url.searchParams.get("year_from"), Math.max(1901, now - 1));
   let yearTo = parsePositiveInt(url.searchParams.get("year_to"), now);
   if (yearFrom > yearTo) {
     [yearFrom, yearTo] = [yearTo, yearFrom];
